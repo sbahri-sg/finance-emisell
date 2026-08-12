@@ -674,8 +674,11 @@ app.delete('/api/accounts/:id', requireAuth, requireFinance, async (req: AuthedR
     const setting = await pool.query('select 1 from organization_settings where organization_id=$1 and default_account_id=$2', [org, req.params.id])
     if (setting.rowCount)
       return res.status(409).json({
-        error: 'Rekening utama tidak dapat dinonaktifkan. Ubah rekening utama di Pengaturan terlebih dahulu.',
+        error: 'Rekening utama tidak dapat dihapus. Ubah rekening utama di Pengaturan terlebih dahulu.',
       })
+    const balance = await pool.query(`select a.opening_balance+coalesce(sum(case when t.status='posted' then e.amount else 0 end),0)::numeric balance from accounts a left join transaction_entries e on e.account_id=a.id left join transactions t on t.id=e.transaction_id where a.id=$1 and a.organization_id=$2 and a.active group by a.id`, [req.params.id, org])
+    if (!balance.rowCount) return res.status(404).json({ error: 'Rekening tidak ditemukan' })
+    if (Math.abs(Number(balance.rows[0].balance)) > 0.005) return res.status(409).json({ error: 'Rekening masih memiliki saldo. Pindahkan atau gunakan seluruh saldo sebelum menghapusnya.' })
     const removed = await pool.query(`update accounts set active=false,updated_at=now() where id=$1 and organization_id=$2 and active and kind<>'clearing' returning id`, [req.params.id, org])
     if (!removed.rowCount) return res.status(404).json({ error: 'Rekening tidak ditemukan' })
     await pool.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'account',$3,'deactivate','{}')`, [org, req.auth!.userId, req.params.id])
@@ -1125,7 +1128,7 @@ app.post('/api/bills/:id/pay', requireAuth, requireFinance, async (req: AuthedRe
       await c.query(`update bills set status='paid',paid_transaction_id=$1,paid_at=now(),paid_by=$2 where id=$3`, [transaction.rows[0].id, req.auth!.userId, bill.rows[0].id])
       let nextBillId = null
       if (bill.rows[0].recurrence !== 'once') {
-        const next = await c.query(`insert into bills(organization_id,vendor,description,due_date,amount,currency,recurrence,owner_name,auto_renew,reminder_days) values($1,$2,$3,($4::date+case when $5='monthly' then interval '1 month' else interval '1 year' end)::date,$6,$7,$5,$8,$9,$10) returning id`, [org, bill.rows[0].vendor, bill.rows[0].description, bill.rows[0].due_date, bill.rows[0].recurrence, bill.rows[0].amount, bill.rows[0].currency, bill.rows[0].owner_name, bill.rows[0].auto_renew, bill.rows[0].reminder_days])
+        const next = await c.query(`insert into bills(organization_id,vendor,description,due_date,amount,unit_price,quantity,payment_method,currency,recurrence,owner_name,auto_renew,reminder_days) values($1,$2,$3,($4::date+case when $5='monthly' then interval '1 month' else interval '1 year' end)::date,$6,$7,$8,$9,$10,$5,$11,$12,$13) returning id`, [org, bill.rows[0].vendor, bill.rows[0].description, bill.rows[0].due_date, bill.rows[0].recurrence, bill.rows[0].amount, bill.rows[0].unit_price || bill.rows[0].amount, bill.rows[0].quantity || 1, bill.rows[0].payment_method, bill.rows[0].currency, bill.rows[0].owner_name, bill.rows[0].auto_renew, bill.rows[0].reminder_days])
         nextBillId = next.rows[0].id
       }
       await c.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'bill',$3,'pay',$4)`, [

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, ArrowDownToLine, CheckCircle2, Copy, Edit3, FolderPlus, PiggyBank, Plus, ReceiptText, WalletCards } from 'lucide-react'
+import { AlertTriangle, ArrowDownToLine, CheckCircle2, ChevronDown, Copy, Edit3, FolderPlus, PiggyBank, Plus, ReceiptText, WalletCards } from 'lucide-react'
 import { Badge, Button, Card, Modal, PageHeader } from '../components/ui'
 import { formatIDR } from '../lib/format'
 import type { BudgetCategory, BudgetCategoryType, BudgetPeriod } from '../types'
@@ -41,6 +41,7 @@ export function MonthlyBudget() {
   const [error, setError] = useState('')
   const [categoryModal, setCategoryModal] = useState(false)
   const [editing, setEditing] = useState<EditingCategory>(null)
+  const [expandedCategoryId, setExpandedCategoryId] = useState<string | null>(null)
 
   const loadBudget = useCallback(async () => {
     setLoading(true)
@@ -289,7 +290,7 @@ export function MonthlyBudget() {
                         <strong>{category.name}</strong>
                         <span>
                           {category.expenseCategory || 'Lain-Lain'} · {categoryTypeLabel[category.categoryType]}
-                          {!!category.details?.length && <> · Rincian: {category.details.join(', ')}</>}
+                          {!!category.details?.length && <> · {category.details.length} rincian</>}
                           {category.pendingAmount > 0 && (
                             <>
                               {' '}
@@ -327,10 +328,27 @@ export function MonthlyBudget() {
                         />
                       </div>
                     </div>
-                    {data.budget?.status !== 'closed' && (
-                      <button className="budget-edit" onClick={() => openCategory(category)} aria-label={`Edit ${category.name}`}>
-                        <Edit3 size={16} />
-                      </button>
+                    <div className="budget-row-actions">
+                      {!!category.details?.length && (
+                        <button className={`budget-edit ${expandedCategoryId === category.id ? 'active' : ''}`} onClick={() => setExpandedCategoryId((current) => (current === category.id ? null : category.id))} aria-label={`Lihat rincian ${category.name}`} aria-expanded={expandedCategoryId === category.id}>
+                          <ChevronDown size={16} />
+                        </button>
+                      )}
+                      {data.budget?.status !== 'closed' && (
+                        <button className="budget-edit" onClick={() => openCategory(category)} aria-label={`Edit ${category.name}`}>
+                          <Edit3 size={16} />
+                        </button>
+                      )}
+                    </div>
+                    {expandedCategoryId === category.id && !!category.details?.length && (
+                      <div className="budget-detail-dropdown">
+                        <strong>Rincian {category.name}</strong>
+                        <div>
+                          {category.details.map((detail) => (
+                            <span key={detail}>{detail}</span>
+                          ))}
+                        </div>
+                      </div>
                     )}
                   </article>
                 )

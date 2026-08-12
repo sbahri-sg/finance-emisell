@@ -11,6 +11,9 @@ export function Bills() {
     [tab, setTab] = useState<'upcoming' | 'paid' | 'all'>('upcoming'),
     [createModal, setCreateModal] = useState(false),
     [editing, setEditing] = useState<Bill | null>(null),
+    [billUnitPrice, setBillUnitPrice] = useState(0),
+    [billQuantity, setBillQuantity] = useState(1),
+    [billCurrency, setBillCurrency] = useState<'IDR' | 'USD'>('IDR'),
     [payment, setPayment] = useState<Bill | null>(null),
     [saving, setSaving] = useState(false),
     [error, setError] = useState(''),
@@ -112,6 +115,10 @@ export function Bills() {
             <Button
               onClick={() => {
                 setError('')
+                setEditing(null)
+                setBillUnitPrice(0)
+                setBillQuantity(1)
+                setBillCurrency('IDR')
                 setCreateModal(true)
               }}
             >
@@ -186,7 +193,7 @@ export function Bills() {
           <table>
             <thead>
               <tr>
-                <th>Vendor & layanan</th>
+                <th>Service & package</th>
                 <th>Jatuh tempo</th>
                 <th>Siklus</th>
                 <th>PIC</th>
@@ -260,6 +267,9 @@ export function Bills() {
                             className="reject"
                             onClick={() => {
                               setEditing(bill)
+                              setBillUnitPrice(bill.unitPrice || bill.amount)
+                              setBillQuantity(bill.quantity || 1)
+                              setBillCurrency(bill.currency)
                               setCreateModal(true)
                             }}
                           >
@@ -322,11 +332,11 @@ export function Bills() {
             </label>
             <label>
               Harga satuan
-              <input name="unitPrice" type="number" min="1" step="1" required defaultValue={editing?.unitPrice || editing?.amount || ''} />
+              <input name="unitPrice" type="number" min="1" step="1" required value={billUnitPrice || ''} onChange={(event) => setBillUnitPrice(Number(event.target.value))} />
             </label>
             <label>
               Jumlah
-              <input name="quantity" type="number" min="0.01" step="0.01" defaultValue={editing?.quantity || 1} required />
+              <input name="quantity" type="number" min="0.01" step="0.01" value={billQuantity} onChange={(event) => setBillQuantity(Number(event.target.value))} required />
             </label>
             <label>
               Metode pembayaran
@@ -338,7 +348,7 @@ export function Bills() {
             </label>
             <label>
               Mata uang
-              <select name="currency" defaultValue={editing?.currency || 'IDR'}>
+              <select name="currency" value={billCurrency} onChange={(event) => setBillCurrency(event.target.value as 'IDR' | 'USD')}>
                 <option value="IDR">IDR</option>
                 <option value="USD">USD</option>
               </select>
@@ -366,7 +376,13 @@ export function Bills() {
             <label className="checkbox-label">
               <input name="autoRenew" type="checkbox" defaultChecked={editing?.autoRenew || false} /> Renewal otomatis oleh service
             </label>
-            <div className="form-note span-2">Total dihitung otomatis dari harga satuan × jumlah. Pengingat muncul berdasarkan tanggal jatuh tempo.</div>
+            <div className="income-journal-note span-2">
+              <CreditCard size={20} />
+              <div>
+                <strong>Total: {formatCurrency(billUnitPrice * billQuantity, billCurrency)}</strong>
+                <span>Dihitung otomatis dari harga satuan × jumlah.</span>
+              </div>
+            </div>
             <div className="modal-actions span-2">
               <Button variant="secondary" onClick={() => setCreateModal(false)}>
                 Batal

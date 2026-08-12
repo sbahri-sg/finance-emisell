@@ -57,7 +57,7 @@ curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d "$topup_paylo
 usage_payload=$(jq -nc --arg category "$category_id" '{transactionDate:"2026-08-11",amount:300000,description:"Pemakaian Meta Ads test",budgetCategoryId:$category}')
 curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d "$usage_payload" "$base/api/deposits/$deposit_id/usage" | jq -er '.id' >/dev/null
 
-bill_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"vendor":"Cloud Test","description":"Server bulanan","dueDate":"2026-08-15","unitPrice":100000,"quantity":1,"paymentMethod":"transfer","currency":"IDR","recurrence":"monthly","owner":"IT","autoRenew":true,"reminderDays":[14,7,1]}' "$base/api/bills" | jq -er '.id')
+bill_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"vendor":"Cloud Test","description":"Server bulanan","dueDate":"2026-08-15","unitPrice":50000,"quantity":2,"paymentMethod":"transfer","currency":"IDR","recurrence":"monthly","owner":"IT","autoRenew":true,"reminderDays":[14,7,1]}' "$base/api/bills" | jq -er '.id')
 bill_payload=$(jq -nc --arg account "$account_id" --arg category "$category_id" '{transactionDate:"2026-08-11",accountId:$account,amount:100000,reference:"BILL-TEST-001",budgetCategoryId:$category}')
 curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d "$bill_payload" "$base/api/bills/$bill_id/pay" | jq -e '.transactionId!=null and .nextBillId!=null' >/dev/null
 
@@ -71,10 +71,16 @@ expense_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d 
 expense_edit=$(jq -nc --arg account "$account_id" '{transactionDate:"2026-08-11",accountId:$account,amount:150000,description:"Expense setelah edit",category:"Lain-Lain",paymentMethod:"cash"}')
 curl -fsS -b "$cookie_file" -X PATCH -H 'Content-Type: application/json' -d "$expense_edit" "$base/api/transactions/$expense_id" | jq -er '.id' >/dev/null
 
-curl -fsS -b "$cookie_file" "$base/api/bootstrap" | jq -e --arg account "$account_id" --arg deposit "$deposit_id" '(.accounts[]|select(.id==$account)|.balance|tonumber)==7500000 and (.accounts[]|select(.id==$deposit)|.balance|tonumber)==1700000 and ([.transactions[]|select(.description=="Income sebelum edit" or .description=="Expense sebelum edit")]|length)==0 and ([.transactions[]|select(.description=="Income setelah edit" or .description=="Expense setelah edit")]|length)==2' >/dev/null
+curl -fsS -b "$cookie_file" "$base/api/bootstrap" | jq -e --arg account "$account_id" --arg deposit "$deposit_id" '(.accounts[]|select(.id==$account)|.balance|tonumber)==7500000 and (.accounts[]|select(.id==$deposit)|.balance|tonumber)==1700000 and ([.transactions[]|select(.description=="Income sebelum edit" or .description=="Expense sebelum edit")]|length)==0 and ([.transactions[]|select(.description=="Income setelah edit" or .description=="Expense setelah edit")]|length)==2 and ([.bills[]|select(.vendor=="Cloud Test" and .status!="paid" and (.unitPrice|tonumber)==50000 and (.quantity|tonumber)==2 and .paymentMethod=="transfer")]|length)==1' >/dev/null
 curl -fsS -b "$cookie_file" "$base/api/reports?month=2026-08" | jq -e '(.summary.income|tonumber)==700000 and (.summary.expense|tonumber)==1500000 and (.summary.depositBalance|tonumber)==1700000' >/dev/null
 reconcile_payload=$(jq -nc '{statementDate:"2026-08-11",statementBalance:7500000,note:"Integration test"}')
 curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d "$reconcile_payload" "$base/api/accounts/$account_id/reconcile" | jq -e '.difference==0' >/dev/null
+
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -b "$cookie_file" -X DELETE "$base/api/accounts/$account_id")" = 409 ]
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -b "$cookie_file" -X DELETE "$base/api/accounts/$deposit_id")" = 409 ]
+empty_deposit=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"name":"Empty Deposit","institution":"Test","kind":"deposit","currency":"IDR","openingBalance":0,"color":"#4f78a5"}' "$base/api/accounts" | jq -er '.id')
+curl -fsS -b "$cookie_file" -X PATCH -H 'Content-Type: application/json' -d '{"name":"Edited Deposit","institution":"Edited Test","kind":"deposit","currency":"IDR","lowBalanceThreshold":250000,"color":"#225c55"}' "$base/api/accounts/$empty_deposit" | jq -e '.ok==true' >/dev/null
+curl -fsS -b "$cookie_file" -X DELETE "$base/api/accounts/$empty_deposit" | jq -e '.ok==true' >/dev/null
 
 curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"status":"closed"}' "$base/api/budgets/$budget_id/status" | jq -e '.ok==true' >/dev/null
 closed_payload=$(jq -nc --arg account "$account_id" '{transactionDate:"2026-08-11",amount:1000,accountId:$account,description:"Should be blocked",category:"Lain-Lain",paymentMethod:"transfer"}')

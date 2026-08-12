@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { AlertTriangle, ArrowDownLeft, ArrowUpRight, Plus, TrendingDown } from 'lucide-react'
+import { AlertTriangle, ArrowDownLeft, ArrowUpRight, Pencil, Plus, Trash2, TrendingDown } from 'lucide-react'
 import { useFinance } from '../lib/FinanceContext'
 import { formatDate, formatIDR } from '../lib/format'
 import { Badge, Button, Card, Modal, PageHeader } from '../components/ui'
-import type { BudgetCategory, DepositAccount } from '../types'
+import type { Account, BudgetCategory, DepositAccount } from '../types'
 
 const today = new Date().toISOString().slice(0, 10)
 export function Deposits() {
@@ -15,6 +15,7 @@ export function Deposits() {
       deposit: DepositAccount
     } | null>(null),
     [createDeposit, setCreateDeposit] = useState(false),
+    [editingDeposit, setEditingDeposit] = useState<Account | null>(null),
     [saving, setSaving] = useState(false),
     [error, setError] = useState(''),
     [budgetCategories, setBudgetCategories] = useState<BudgetCategory[]>([])
@@ -136,6 +137,38 @@ export function Deposits() {
       setSaving(false)
     }
   }
+  async function updateDeposit(formData: FormData) {
+    if (!editingDeposit) return
+    setSaving(true)
+    setError('')
+    try {
+      const response = await fetch(`/api/accounts/${editingDeposit.id}`, { method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: String(formData.get('name')).trim(), institution: String(formData.get('institution')).trim() || undefined, kind: 'deposit', maskedNumber: String(formData.get('maskedNumber')).trim() || undefined, currency: editingDeposit.currency, lowBalanceThreshold: Number(formData.get('lowBalanceThreshold')) || undefined, color: String(formData.get('color')) }) })
+      const result = (await response.json().catch(() => ({}))) as { error?: string }
+      if (!response.ok) throw new Error(result.error || 'Deposit belum dapat diperbarui')
+      await refresh()
+      setEditingDeposit(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Terjadi kesalahan')
+    } finally {
+      setSaving(false)
+    }
+  }
+  async function removeDeposit(account: Account | null = editingDeposit) {
+    if (!account || !window.confirm(`Hapus deposit ${account.name}? Deposit hanya dapat dihapus jika saldonya nol.`)) return
+    setSaving(true)
+    setError('')
+    try {
+      const response = await fetch(`/api/accounts/${account.id}`, { method: 'DELETE', credentials: 'include' })
+      const result = (await response.json().catch(() => ({}))) as { error?: string }
+      if (!response.ok) throw new Error(result.error || 'Deposit belum dapat dihapus')
+      await refresh()
+      setEditingDeposit(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Terjadi kesalahan')
+    } finally {
+      setSaving(false)
+    }
+  }
   return (
     <>
       <PageHeader
@@ -150,7 +183,7 @@ export function Deposits() {
           ) : undefined
         }
       />
-      {error && !action && (
+      {error && !action && !editingDeposit && (
         <div className="budget-alert error">
           <span>{error}</span>
           <button onClick={() => setError('')}>Tutup</button>
@@ -230,8 +263,17 @@ export function Deposits() {
               </div>
               {canManage && (
                 <div className="page-actions">
-                  <Button variant="secondary" onClick={() => navigate('/rekening')}>
-                    Kelola akun
+                  <Button
+                    variant="secondary"
+                    onClick={() => {
+                      setError('')
+                      setEditingDeposit(accounts.find((account) => account.id === deposit.id) || null)
+                    }}
+                  >
+                    <Pencil size={15} /> Edit
+                  </Button>
+                  <Button variant="secondary" onClick={() => void removeDeposit(accounts.find((item) => item.id === deposit.id) || null)}>
+                    <Trash2 size={15} /> Hapus
                   </Button>
                   <Button
                     variant="secondary"
@@ -307,6 +349,51 @@ export function Deposits() {
           )}
         </div>
       </Card>
+      {editingDeposit && (
+        <Modal
+          title={`Edit ${editingDeposit.name}`}
+          description="Ubah informasi akun deposit tanpa mengubah saldo."
+          onClose={() => {
+            setEditingDeposit(null)
+            setError('')
+          }}
+        >
+          <form className="form-grid" action={updateDeposit}>
+            {error && <div className="auth-error span-2">{error}</div>}
+            <label>
+              Nama platform
+              <input name="name" required minLength={2} maxLength={100} defaultValue={editingDeposit.name} />
+            </label>
+            <label>
+              Nama akun bisnis
+              <input name="institution" maxLength={100} defaultValue={editingDeposit.institution} />
+            </label>
+            <label>
+              ID akun
+              <input name="maskedNumber" maxLength={20} defaultValue={editingDeposit.maskedNumber} />
+            </label>
+            <label>
+              Batas saldo minimum
+              <input name="lowBalanceThreshold" type="number" min="0" step="1000" defaultValue={editingDeposit.lowBalanceThreshold || 0} />
+            </label>
+            <label className="span-2">
+              Warna indikator
+              <input className="color-input" name="color" type="color" defaultValue={editingDeposit.color} />
+            </label>
+            <div className="modal-actions span-2">
+              <Button variant="danger" onClick={() => void removeDeposit()} disabled={saving}>
+                <Trash2 size={15} /> Hapus
+              </Button>
+              <Button variant="secondary" onClick={() => setEditingDeposit(null)}>
+                Batal
+              </Button>
+              <Button type="submit" disabled={saving}>
+                {saving ? 'Menyimpan…' : 'Simpan perubahan'}
+              </Button>
+            </div>
+          </form>
+        </Modal>
+      )}
       {createDeposit && (
         <Modal
           title="Siapkan akun deposit"

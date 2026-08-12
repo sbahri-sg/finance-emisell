@@ -59,7 +59,7 @@ export function Accounts() {
     if (ok) setEditing(null)
   }
   async function removeAccount() {
-    if (!editing || !window.confirm(`Nonaktifkan ${editing.name}? Histori transaksi tetap disimpan.`)) return
+    if (!editing || !window.confirm(`Hapus ${editing.name}? Histori transaksi tetap disimpan. Rekening hanya dapat dihapus jika saldonya nol.`)) return
     const ok = await api(`/api/accounts/${editing.id}`, {}, 'DELETE')
     if (ok) setEditing(null)
   }
@@ -339,7 +339,7 @@ export function Accounts() {
             </label>
             <div className="modal-actions span-2">
               <Button variant="danger" onClick={removeAccount} disabled={saving}>
-                Nonaktifkan
+                Hapus
               </Button>
               <Button variant="secondary" onClick={() => setEditing(null)}>
                 Batal
