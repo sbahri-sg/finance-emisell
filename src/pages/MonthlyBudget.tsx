@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, ArrowDownToLine, CheckCircle2, ChevronDown, Copy, Edit3, FolderPlus, PiggyBank, Plus, ReceiptText, WalletCards } from 'lucide-react'
+import { AlertTriangle, ArrowDownToLine, CheckCircle2, ChevronDown, Copy, Edit3, FolderPlus, PiggyBank, Plus, ReceiptText, Trash2, WalletCards } from 'lucide-react'
 import { Badge, Button, Card, Modal, PageHeader } from '../components/ui'
 import { formatIDR } from '../lib/format'
-import type { BudgetCategory, BudgetCategoryType, BudgetPeriod } from '../types'
+import type { BudgetCategory, BudgetCategoryType, BudgetLineItem, BudgetModel, BudgetPeriod } from '../types'
 import { useFinance } from '../lib/FinanceContext'
 
 type BudgetResponse = {
@@ -42,6 +42,9 @@ export function MonthlyBudget() {
   const [categoryModal, setCategoryModal] = useState(false)
   const [editing, setEditing] = useState<EditingCategory>(null)
   const [expandedCategoryId, setExpandedCategoryId] = useState<string | null>(null)
+  const [budgetModel, setBudgetModel] = useState<BudgetModel>('fixed')
+  const [lineItems, setLineItems] = useState<BudgetLineItem[]>([])
+  const [fixedAmount, setFixedAmount] = useState(0)
 
   const loadBudget = useCallback(async () => {
     setLoading(true)
@@ -58,6 +61,8 @@ export function MonthlyBudget() {
           actual: numberValue(category.actual),
           pendingAmount: numberValue(category.pendingAmount),
           committedAmount: numberValue(category.committedAmount),
+          budgetModel: category.budgetModel || (category.details?.length ? 'multi_item' : 'fixed'),
+          lineItems: (category.lineItems || []).map((item) => ({ name: item.name, quantity: numberValue(item.quantity), unitPrice: numberValue(item.unitPrice) })),
         })),
       })
     } catch (e) {
@@ -136,19 +141,25 @@ export function MonthlyBudget() {
   }
   function openCategory(category: EditingCategory) {
     setEditing(category)
+    setBudgetModel(category?.budgetModel || 'fixed')
+    setLineItems(category?.lineItems?.length ? category.lineItems.map((item) => ({ ...item })) : [])
+    setFixedAmount(category?.plannedAmount || 0)
     setCategoryModal(true)
   }
+  function updateLineItem(index: number, field: keyof BudgetLineItem, value: string) {
+    setLineItems((current) => current.map((item, itemIndex) => (itemIndex === index ? { ...item, [field]: field === 'name' ? value : Number(value) } : item)))
+  }
+  const lineItemsTotal = lineItems.reduce((sum, item) => sum + numberValue(item.quantity) * numberValue(item.unitPrice), 0)
   async function saveCategory(formData: FormData) {
     if (!data.budget) return
     const payload = {
       name: String(formData.get('name')).trim(),
       expenseCategory: String(formData.get('expenseCategory')),
-      details: String(formData.get('details'))
-        .split(',')
-        .map((value) => value.trim())
-        .filter(Boolean),
+      details: budgetModel === 'multi_item' ? lineItems.map((item) => item.name.trim()).filter(Boolean) : [],
+      budgetModel,
+      lineItems: budgetModel === 'multi_item' ? lineItems.map((item) => ({ name: item.name.trim(), quantity: numberValue(item.quantity), unitPrice: numberValue(item.unitPrice) })) : [],
       categoryType: String(formData.get('categoryType')),
-      plannedAmount: Number(formData.get('plannedAmount')),
+      plannedAmount: budgetModel === 'multi_item' ? lineItemsTotal : fixedAmount,
       color: String(formData.get('color')),
     }
     const ok = await request(editing ? `/api/budget-categories/${editing.id}` : `/api/budgets/${data.budget.id}/categories`, { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(payload) })
@@ -290,7 +301,7 @@ export function MonthlyBudget() {
                         <strong>{category.name}</strong>
                         <span>
                           {category.expenseCategory || 'Lain-Lain'} · {categoryTypeLabel[category.categoryType]}
-                          {!!category.details?.length && <> · {category.details.length} rincian</>}
+                          {' '}· {category.budgetModel === 'multi_item' ? `${category.lineItems.length} item` : 'Model tetap'}
                           {category.pendingAmount > 0 && (
                             <>
                               {' '}
@@ -329,7 +340,7 @@ export function MonthlyBudget() {
                       </div>
                     </div>
                     <div className="budget-row-actions">
-                      {!!category.details?.length && (
+                      {!!category.lineItems?.length && (
                         <button className={`budget-edit ${expandedCategoryId === category.id ? 'active' : ''}`} onClick={() => setExpandedCategoryId((current) => (current === category.id ? null : category.id))} aria-label={`Lihat rincian ${category.name}`} aria-expanded={expandedCategoryId === category.id}>
                           <ChevronDown size={16} />
                         </button>
@@ -340,12 +351,16 @@ export function MonthlyBudget() {
                         </button>
                       )}
                     </div>
-                    {expandedCategoryId === category.id && !!category.details?.length && (
+                    {expandedCategoryId === category.id && !!category.lineItems?.length && (
                       <div className="budget-detail-dropdown">
                         <strong>Rincian {category.name}</strong>
-                        <div>
-                          {category.details.map((detail) => (
-                            <span key={detail}>{detail}</span>
+                        <div className="budget-detail-table">
+                          {category.lineItems.map((item, index) => (
+                            <div key={`${item.name}-${index}`}>
+                              <span>{item.name}</span>
+                              <span>{item.quantity.toLocaleString('id-ID')} × {formatIDR(item.unitPrice)}</span>
+                              <strong>{formatIDR(item.quantity * item.unitPrice)}</strong>
+                            </div>
                           ))}
                         </div>
                       </div>
@@ -407,18 +422,42 @@ export function MonthlyBudget() {
                 <option value="investment">Investasi/aset</option>
               </select>
             </label>
-            <label className="span-2">
-              Rincian pos <span className="optional-label">Pisahkan dengan koma</span>
-              <input name="details" maxLength={1000} defaultValue={editing?.details?.join(', ') || ''} placeholder="Contoh: Galon, ATK, tinta printer" />
+            <label>
+              Model anggaran
+              <select value={budgetModel} onChange={(event) => setBudgetModel(event.target.value as BudgetModel)}>
+                <option value="fixed">Tetap — satu nominal</option>
+                <option value="multi_item">Multi-item — rincian otomatis</option>
+              </select>
             </label>
             <label>
               Warna indikator
               <input className="color-input" name="color" type="color" defaultValue={editing?.color || '#2f7168'} />
             </label>
-            <label className="span-2">
-              Nominal anggaran
-              <input name="plannedAmount" type="number" min="0" step="1" required defaultValue={editing?.plannedAmount || 0} />
-            </label>
+            {budgetModel === 'fixed' ? (
+              <label className="span-2">
+                Nominal anggaran
+                <input name="plannedAmount" type="number" min="0" step="1" required value={fixedAmount} onChange={(event) => setFixedAmount(Number(event.target.value))} />
+              </label>
+            ) : (
+              <div className="budget-line-editor span-2">
+                <div className="budget-line-heading">
+                  <div><strong>Rincian item</strong><span>Kuantitas × harga satuan dihitung otomatis.</span></div>
+                  <button type="button" onClick={() => setLineItems((current) => [...current, { name: '', quantity: 1, unitPrice: 0 }])}><Plus size={15} /> Tambah item</button>
+                </div>
+                <div className="budget-line-labels"><span>Nama item</span><span>Qty</span><span>Harga satuan</span><span>Total</span><span /></div>
+                {lineItems.map((item, index) => (
+                  <div className="budget-line-row" key={index}>
+                    <input required minLength={2} maxLength={80} value={item.name} onChange={(event) => updateLineItem(index, 'name', event.target.value)} placeholder="Contoh: Galon" />
+                    <input required type="number" min="0.01" step="0.01" value={item.quantity} onChange={(event) => updateLineItem(index, 'quantity', event.target.value)} />
+                    <input required type="number" min="0" step="1" value={item.unitPrice} onChange={(event) => updateLineItem(index, 'unitPrice', event.target.value)} />
+                    <strong>{formatIDR(item.quantity * item.unitPrice)}</strong>
+                    <button type="button" aria-label={`Hapus ${item.name || 'item'}`} onClick={() => setLineItems((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={15} /></button>
+                  </div>
+                ))}
+                {!lineItems.length && <div className="budget-line-empty">Belum ada item. Klik “Tambah item” untuk membuat rincian RAB.</div>}
+                <div className="budget-line-total"><span>Total anggaran</span><strong>{formatIDR(lineItemsTotal)}</strong></div>
+              </div>
+            )}
             <div className="form-note span-2">Mengubah nominal tidak mengubah saldo rekening. Semua perubahan dicatat dalam audit log.</div>
             <div className="modal-actions span-2">
               <Button

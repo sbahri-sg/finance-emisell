@@ -18,6 +18,11 @@ export function Transactions() {
   const [expenseModal, setExpenseModal] = useState(false)
   const [editing, setEditing] = useState<Transaction | null>(null)
   const [budgetCategories, setBudgetCategories] = useState<BudgetCategory[]>([])
+  const [expenseAmount, setExpenseAmount] = useState(0)
+  const [expenseDescription, setExpenseDescription] = useState('')
+  const [expenseCategory, setExpenseCategory] = useState('Utilities & Langganan')
+  const [expenseBudgetCategoryId, setExpenseBudgetCategoryId] = useState('')
+  const [expenseBudgetItemName, setExpenseBudgetItemName] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const cashAccounts = accounts.filter((account) => ['bank', 'cash', 'ewallet'].includes(account.kind))
@@ -33,8 +38,7 @@ export function Transactions() {
     }
     if (action === 'expense' && canPost) {
       setError('')
-      setEditing(null)
-      setExpenseModal(true)
+      openExpense(null)
     }
     if (action) {
       const next = new URLSearchParams(searchParams)
@@ -53,11 +57,19 @@ export function Transactions() {
             actual: Number(category.actual),
             pendingAmount: Number(category.pendingAmount),
             committedAmount: Number(category.committedAmount),
+            budgetModel: category.budgetModel || 'fixed',
+            lineItems: (category.lineItems || []).map((item) => ({ name: item.name, quantity: Number(item.quantity), unitPrice: Number(item.unitPrice) })),
           })),
         ),
       )
   }, [])
   const filtered = useMemo(() => items.filter((item) => `${item.description} ${item.reference} ${item.category} ${item.counterparty || ''}`.toLowerCase().includes(query.toLowerCase()) && (kind === 'all' || item.kind === kind)), [items, kind, query])
+  const expenseBudgetItemValue = useMemo(() => {
+    if (!expenseBudgetCategoryId || !expenseBudgetItemName) return ''
+    const category = budgetCategories.find((item) => item.id === expenseBudgetCategoryId)
+    const itemIndex = category?.lineItems.findIndex((item) => item.name === expenseBudgetItemName) ?? -1
+    return itemIndex >= 0 ? `${expenseBudgetCategoryId}:${itemIndex}` : ''
+  }, [budgetCategories, expenseBudgetCategoryId, expenseBudgetItemName])
   const monthItems = items.filter((item) => item.date.startsWith(currentMonth))
   const incomeTotal = monthItems.filter((item) => item.kind === 'income' && item.status === 'posted').reduce((sum, item) => sum + Math.max(0, item.amount), 0)
   const expenseTotal = Math.abs(monthItems.filter((item) => item.amount < 0 && item.status === 'posted').reduce((sum, item) => sum + item.amount, 0))
@@ -102,11 +114,12 @@ export function Transactions() {
     try {
       const payload = {
         transactionDate: String(formData.get('transactionDate')),
-        amount: Number(formData.get('amount')),
+        amount: expenseAmount,
         accountId: String(formData.get('accountId')),
-        description: String(formData.get('description')).trim(),
-        category: String(formData.get('category')),
-        budgetCategoryId: String(formData.get('budgetCategoryId')) || undefined,
+        description: expenseDescription.trim(),
+        category: expenseCategory,
+        budgetCategoryId: expenseBudgetCategoryId || undefined,
+        budgetItemName: expenseBudgetItemValue ? expenseBudgetItemName : undefined,
         counterparty: String(formData.get('counterparty')).trim() || undefined,
         paymentMethod: String(formData.get('paymentMethod')),
         proofUrl: String(formData.get('proofUrl')).trim() || undefined,
@@ -148,9 +161,32 @@ export function Transactions() {
   }
   function editTransaction(transaction: Transaction) {
     setError('')
-    setEditing(transaction)
     if (transaction.kind === 'income') setModal(true)
-    else setExpenseModal(true)
+    else openExpense(transaction)
+  }
+  function openExpense(transaction: Transaction | null) {
+    setEditing(transaction)
+    setExpenseAmount(transaction ? Math.abs(transaction.amount) : 0)
+    setExpenseDescription(transaction?.description || '')
+    setExpenseCategory(transaction?.category && ['Utilities & Langganan', 'Konsumsi & Pantry', 'Kebersihan & Perlengkapan', 'Kegiatan', 'Personalia', 'Lain-Lain'].includes(transaction.category) ? transaction.category : 'Lain-Lain')
+    setExpenseBudgetCategoryId(transaction?.budgetCategoryId || '')
+    setExpenseBudgetItemName(transaction?.budgetItemName || '')
+    setExpenseModal(true)
+  }
+  function selectBudgetItem(value: string) {
+    if (!value) {
+      setExpenseBudgetItemName('')
+      return
+    }
+    const [categoryId, itemIndexText] = value.split(':')
+    const category = budgetCategories.find((item) => item.id === categoryId)
+    const item = category?.lineItems[Number(itemIndexText)]
+    if (!category || !item) return
+    setExpenseBudgetCategoryId(category.id)
+    setExpenseBudgetItemName(item.name)
+    setExpenseDescription(item.name)
+    setExpenseAmount(item.quantity * item.unitPrice)
+    setExpenseCategory(category.expenseCategory || 'Lain-Lain')
   }
   async function postTransaction(id: string) {
     setSaving(true)
@@ -189,8 +225,7 @@ export function Transactions() {
                 variant="secondary"
                 onClick={() => {
                   setError('')
-                  setEditing(null)
-                  setExpenseModal(true)
+                  openExpense(null)
                 }}
               >
                 <ArrowUpRight size={16} /> Catat pengeluaran
@@ -441,7 +476,7 @@ export function Transactions() {
             </label>
             <label>
               Nominal
-              <input name="amount" type="number" min="1" step="1" required defaultValue={editing ? Math.abs(editing.amount) : undefined} />
+              <input name="amount" type="number" min="1" step="1" required value={expenseAmount || ''} onChange={(event) => setExpenseAmount(Number(event.target.value))} />
             </label>
             <label>
               Rekening
@@ -458,7 +493,7 @@ export function Transactions() {
             </label>
             <label>
               Kategori
-              <select name="category" defaultValue={editing?.category || 'Utilities & Langganan'}>
+              <select name="category" value={expenseCategory} onChange={(event) => setExpenseCategory(event.target.value)}>
                 <option>Utilities & Langganan</option>
                 <option>Konsumsi & Pantry</option>
                 <option>Kebersihan & Perlengkapan</option>
@@ -468,8 +503,21 @@ export function Transactions() {
               </select>
             </label>
             <label className="span-2">
+              Ambil dari rincian RAB <span className="optional-label">Opsional</span>
+              <select value={expenseBudgetItemValue} onChange={(event) => selectBudgetItem(event.target.value)}>
+                <option value="">Pilih item untuk mengisi otomatis</option>
+                {budgetCategories.filter((category) => category.lineItems.length).map((category) => (
+                  <optgroup label={category.name} key={category.id}>
+                    {category.lineItems.map((item, index) => (
+                      <option value={`${category.id}:${index}`} key={`${category.id}-${index}`}>{item.name} — {item.quantity.toLocaleString('id-ID')} × {formatIDR(item.unitPrice)} = {formatIDR(item.quantity * item.unitPrice)}</option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </label>
+            <label className="span-2">
               Pos RAB
-              <select name="budgetCategoryId" defaultValue={editing?.budgetCategoryId || ''}>
+              <select name="budgetCategoryId" value={expenseBudgetCategoryId} onChange={(event) => { setExpenseBudgetCategoryId(event.target.value); setExpenseBudgetItemName('') }}>
                 <option value="">Di luar RAB</option>
                 {budgetCategories.map((category) => (
                   <option value={category.id} key={category.id}>
@@ -480,7 +528,7 @@ export function Transactions() {
             </label>
             <label className="span-2">
               Deskripsi
-              <input name="description" required minLength={3} maxLength={240} defaultValue={editing?.description || ''} />
+              <input name="description" required minLength={3} maxLength={240} value={expenseDescription} onChange={(event) => setExpenseDescription(event.target.value)} />
             </label>
             <label>
               PIC

@@ -30,6 +30,7 @@ export interface Transaction {
   account: string
   accountId?: string
   budgetCategoryId?: string
+  budgetItemName?: string
   kind: TransactionKind
   amount: number
   status: TransactionStatus
@@ -104,6 +105,13 @@ export interface PurchaseRequest {
 }
 
 export type BudgetCategoryType = 'fixed' | 'variable' | 'emergency' | 'investment'
+export type BudgetModel = 'fixed' | 'multi_item'
+
+export interface BudgetLineItem {
+  name: string
+  quantity: number
+  unitPrice: number
+}
 
 export interface BudgetPeriod {
   id: string
@@ -123,6 +131,8 @@ export interface BudgetCategory {
   color: string
   expenseCategory?: string
   details?: string[]
+  budgetModel: BudgetModel
+  lineItems: BudgetLineItem[]
 }
 
 export interface WorkspaceUser {
