@@ -1,0 +1,2 @@
+-- Demo categories are intentionally excluded because organization/user UUIDs are environment-specific.
+-- After the first owner signs up, provision one organization and membership using a trusted server-side script.

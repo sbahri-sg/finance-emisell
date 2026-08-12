@@ -1,0 +1,82 @@
+name: emisell-finance
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB wajib diisi}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER wajib diisi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD wajib diisi}
+      TZ: ${TZ:-Asia/Jakarta}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    shm_size: 128mb
+    stop_grace_period: 30s
+    networks:
+      - backend
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+
+  app:
+    image: ${APP_IMAGE:-emisell-finance:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    restart: unless-stopped
+    init: true
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL wajib diisi}
+      APP_ORIGIN: ${APP_ORIGIN:?APP_ORIGIN wajib diisi}
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+      NODE_ENV: production
+      PORT: 3000
+      TZ: ${TZ:-Asia/Jakarta}
+    depends_on:
+      postgres:
+        condition: service_healthy
+        restart: true
+    ports:
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8080}:3000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 200
+    mem_limit: 512m
+    cpus: 1.0
+    stop_grace_period: 20s
+    networks:
+      - backend
+      - edge
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  edge:
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: true
+
+volumes:
+  postgres_data:
+    name: ${POSTGRES_VOLUME_NAME:-emisell_finance_postgres_data}

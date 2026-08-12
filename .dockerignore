@@ -1,0 +1,15 @@
+node_modules
+dist
+server-dist
+.env*
+!.env.example
+!.env.production.example
+.git
+.gitignore
+.DS_Store
+coverage
+*.log
+*.md
+docker-compose*.yml
+compose*.yml
+scripts
