@@ -4,7 +4,7 @@ import { ArrowDownLeft, ArrowUpRight, BanknoteArrowDown, Check, Download, Filter
 import { Badge, Button, Card, Modal, PageHeader } from '../components/ui'
 import { useFinance } from '../lib/FinanceContext'
 import { formatDate, formatIDR } from '../lib/format'
-import type { BudgetCategory, Transaction } from '../types'
+import type { BudgetCategory, ExpenseCategoryLabel, Transaction } from '../types'
 
 const currentMonth = new Date().toISOString().slice(0, 7)
 const today = new Date().toISOString().slice(0, 10)
@@ -18,6 +18,7 @@ export function Transactions() {
   const [expenseModal, setExpenseModal] = useState(false)
   const [editing, setEditing] = useState<Transaction | null>(null)
   const [budgetCategories, setBudgetCategories] = useState<BudgetCategory[]>([])
+  const [expenseCategories, setExpenseCategories] = useState<ExpenseCategoryLabel[]>([])
   const [expenseAmount, setExpenseAmount] = useState(0)
   const [expenseDescription, setExpenseDescription] = useState('')
   const [expenseCategory, setExpenseCategory] = useState('Utilities & Langganan')
@@ -38,7 +39,12 @@ export function Transactions() {
     }
     if (action === 'expense' && canPost) {
       setError('')
-      openExpense(null)
+      setEditing(null)
+      setExpenseAmount(0)
+      setExpenseDescription('')
+      setExpenseBudgetCategoryId('')
+      setExpenseBudgetItemName('')
+      setExpenseModal(true)
     }
     if (action) {
       const next = new URLSearchParams(searchParams)
@@ -62,6 +68,15 @@ export function Transactions() {
           })),
         ),
       )
+  }, [])
+  useEffect(() => {
+    void fetch('/api/expense-categories', { credentials: 'include' })
+      .then((response) => (response.ok ? response.json() : { categories: [] }))
+      .then((raw: { categories?: ExpenseCategoryLabel[] }) => {
+        const categories = raw.categories || []
+        setExpenseCategories(categories)
+        if (categories.length) setExpenseCategory((current) => (categories.some((item) => item.name === current) ? current : categories[0].name))
+      })
   }, [])
   const filtered = useMemo(() => items.filter((item) => `${item.description} ${item.reference} ${item.category} ${item.counterparty || ''}`.toLowerCase().includes(query.toLowerCase()) && (kind === 'all' || item.kind === kind)), [items, kind, query])
   const expenseBudgetItemValue = useMemo(() => {
@@ -168,7 +183,7 @@ export function Transactions() {
     setEditing(transaction)
     setExpenseAmount(transaction ? Math.abs(transaction.amount) : 0)
     setExpenseDescription(transaction?.description || '')
-    setExpenseCategory(transaction?.category && ['Utilities & Langganan', 'Konsumsi & Pantry', 'Kebersihan & Perlengkapan', 'Kegiatan', 'Personalia', 'Lain-Lain'].includes(transaction.category) ? transaction.category : 'Lain-Lain')
+    setExpenseCategory(transaction?.category || expenseCategories[0]?.name || 'Lain-Lain')
     setExpenseBudgetCategoryId(transaction?.budgetCategoryId || '')
     setExpenseBudgetItemName(transaction?.budgetItemName || '')
     setExpenseModal(true)
@@ -494,12 +509,8 @@ export function Transactions() {
             <label>
               Kategori
               <select name="category" value={expenseCategory} onChange={(event) => setExpenseCategory(event.target.value)}>
-                <option>Utilities & Langganan</option>
-                <option>Konsumsi & Pantry</option>
-                <option>Kebersihan & Perlengkapan</option>
-                <option>Kegiatan</option>
-                <option>Personalia</option>
-                <option>Lain-Lain</option>
+                {expenseCategory && !expenseCategories.some((category) => category.name === expenseCategory) && <option value={expenseCategory}>{expenseCategory} — nonaktif</option>}
+                {expenseCategories.map((category) => <option value={category.name} key={category.id}>{category.name}</option>)}
               </select>
             </label>
             <label className="span-2">

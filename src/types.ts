@@ -130,9 +130,19 @@ export interface BudgetCategory {
   committedAmount: number
   color: string
   expenseCategory?: string
+  expenseCategoryId?: string
   details?: string[]
   budgetModel: BudgetModel
   lineItems: BudgetLineItem[]
+}
+
+export interface ExpenseCategoryLabel {
+  id: string
+  name: string
+  color: string
+  active: boolean
+  transactionCount?: number
+  budgetCount?: number
 }
 
 export interface WorkspaceUser {

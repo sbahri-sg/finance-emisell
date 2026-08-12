@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ArrowDownToLine, CheckCircle2, ChevronDown, Copy, Edit3, FolderPlus, PiggyBank, Plus, ReceiptText, Trash2, WalletCards } from 'lucide-react'
 import { Badge, Button, Card, Modal, PageHeader } from '../components/ui'
 import { formatIDR } from '../lib/format'
-import type { BudgetCategory, BudgetCategoryType, BudgetLineItem, BudgetModel, BudgetPeriod } from '../types'
+import type { BudgetCategory, BudgetCategoryType, BudgetLineItem, BudgetModel, BudgetPeriod, ExpenseCategoryLabel } from '../types'
 import { useFinance } from '../lib/FinanceContext'
 
 type BudgetResponse = {
@@ -45,6 +45,7 @@ export function MonthlyBudget() {
   const [budgetModel, setBudgetModel] = useState<BudgetModel>('fixed')
   const [lineItems, setLineItems] = useState<BudgetLineItem[]>([])
   const [fixedAmount, setFixedAmount] = useState(0)
+  const [expenseCategories, setExpenseCategories] = useState<ExpenseCategoryLabel[]>([])
 
   const loadBudget = useCallback(async () => {
     setLoading(true)
@@ -74,6 +75,9 @@ export function MonthlyBudget() {
   useEffect(() => {
     void loadBudget()
   }, [loadBudget])
+  useEffect(() => {
+    void fetch('/api/expense-categories', { credentials: 'include' }).then((response) => response.ok ? response.json() : { categories: [] }).then((raw: { categories?: ExpenseCategoryLabel[] }) => setExpenseCategories(raw.categories || []))
+  }, [])
 
   const summary = useMemo(
     () =>
@@ -411,13 +415,9 @@ export function MonthlyBudget() {
             </label>
             <label>
               Kategori pengeluaran
-              <select name="expenseCategory" defaultValue={editing?.expenseCategory || 'Lain-Lain'}>
-                <option>Utilities & Langganan</option>
-                <option>Konsumsi & Pantry</option>
-                <option>Kebersihan & Perlengkapan</option>
-                <option>Kegiatan</option>
-                <option>Personalia</option>
-                <option>Lain-Lain</option>
+              <select name="expenseCategory" defaultValue={editing?.expenseCategory || expenseCategories[0]?.name}>
+                {editing?.expenseCategory && !expenseCategories.some((category) => category.name === editing.expenseCategory) && <option value={editing.expenseCategory}>{editing.expenseCategory} — nonaktif</option>}
+                {expenseCategories.map((category) => <option value={category.name} key={category.id}>{category.name}</option>)}
               </select>
             </label>
             <label>

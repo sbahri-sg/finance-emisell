@@ -137,6 +137,7 @@ app.post('/api/auth/setup', authLimit, async (req, res, next) => {
       const password = await hashPassword(input.password)
       const user = await client.query(`insert into users(organization_id,email,full_name,password_hash,role) values($1,$2,$3,$4,'owner') returning id`, [org.rows[0].id, input.email.toLowerCase(), input.fullName.trim(), password])
       await client.query(`insert into accounts(organization_id,name,kind,color) values($1,'Kas Kecil','cash','#6b7d78'),($1,'Pendapatan','clearing','#225c55'),($1,'Pengeluaran','clearing','#d89b50')`, [org.rows[0].id])
+      await client.query(`insert into expense_categories(organization_id,name,color) values($1,'Utilities & Langganan','#4f78a5'),($1,'Konsumsi & Pantry','#d89b50'),($1,'Kebersihan & Perlengkapan','#6f9f72'),($1,'Kegiatan','#b98953'),($1,'Personalia','#8a6fa5'),($1,'Lain-Lain','#8b9692')`, [org.rows[0].id])
       await client.query('commit')
       await createSession(res, user.rows[0].id)
       res.status(201).json({ ok: true })
@@ -324,23 +325,80 @@ const governanceInput = z.object({
   ownerApprovalThreshold: z.number().nonnegative().max(1e15),
   sessionHours: z.number().int().min(1).max(168),
 })
+const expenseCategoryLabelInput = z.object({
+  name: z.string().trim().min(2).max(80),
+  color: z.string().regex(/^#[0-9A-Fa-f]{6}$/),
+  active: z.boolean().optional(),
+})
+
+async function getExpenseCategory(c: Pick<typeof pool, 'query'> | import('pg').PoolClient, org: string, name: string, allowInactive = false) {
+  const category = await c.query(`select id,name,color,active from expense_categories where organization_id=$1 and lower(name)=lower($2)${allowInactive ? '' : ' and active'}`, [org, name])
+  if (!category.rowCount) throw Object.assign(new Error('Kategori pengeluaran tidak valid atau tidak aktif'), { statusCode: 400 })
+  return category.rows[0] as { id: string; name: string; color: string; active: boolean }
+}
+async function getFallbackExpenseCategory(c: Pick<typeof pool, 'query'> | import('pg').PoolClient, org: string, preferred: string) {
+  const category = await c.query(`select id,name,color,active from expense_categories where organization_id=$1 and active order by case when lower(name)=lower($2) then 0 else 1 end,name limit 1`, [org, preferred])
+  if (!category.rowCount) throw Object.assign(new Error('Belum ada kategori pengeluaran aktif'), { statusCode: 409 })
+  return category.rows[0] as { id: string; name: string; color: string; active: boolean }
+}
 
 app.get('/api/settings', requireAuth, async (req: AuthedRequest, res, next) => {
   try {
     const org = req.auth!.organizationId
     await pool.query('insert into organization_settings(organization_id) values($1) on conflict(organization_id) do nothing', [org])
-    const [profile, settings, accounts] = await Promise.all([
+    const [profile, settings, accounts, expenseCategories] = await Promise.all([
       pool.query(`select name,coalesce(legal_name,'') "legalName",coalesce(tax_id,'') "taxId",coalesce(finance_email,'') "financeEmail",coalesce(address,'') address,timezone,base_currency "baseCurrency" from organizations where id=$1`, [org]),
       pool.query(`select coalesce(default_account_id::text,'') "defaultAccountId",transaction_prefix "transactionPrefix",purchase_prefix "purchasePrefix",minimum_cash_balance::numeric "minimumCashBalance",bill_reminder_days "billReminderDays",notify_bills "notifyBills",notify_low_deposit "notifyLowDeposit",notify_purchase_approval "notifyPurchaseApproval",notify_reconciliation "notifyReconciliation",owner_approval_threshold::numeric "ownerApprovalThreshold",session_hours "sessionHours",updated_at "updatedAt" from organization_settings where organization_id=$1`, [org]),
       pool.query(`select id,name,kind from accounts where organization_id=$1 and active and kind in('bank','cash','ewallet') order by name`, [org]),
+      pool.query(`select ec.id,ec.name,ec.color,ec.active,(select count(*)::int from transactions t where t.expense_category_id=ec.id) "transactionCount",(select count(*)::int from budget_categories bc where bc.expense_category_id=ec.id) "budgetCount" from expense_categories ec where ec.organization_id=$1 order by ec.active desc,ec.name`, [org]),
     ])
     res.json({
       profile: profile.rows[0],
       settings: settings.rows[0],
       accounts: accounts.rows,
+      expenseCategories: expenseCategories.rows,
       canAdmin: ['owner', 'admin'].includes(req.auth!.role),
     })
   } catch (e) {
+    next(e)
+  }
+})
+
+app.get('/api/expense-categories', requireAuth, async (req: AuthedRequest, res, next) => {
+  try {
+    const includeInactive = req.query.includeInactive === 'true' && ['owner', 'admin'].includes(req.auth!.role)
+    const categories = await pool.query(`select id,name,color,active from expense_categories where organization_id=$1${includeInactive ? '' : ' and active'} order by active desc,name`, [req.auth!.organizationId])
+    res.json({ categories: categories.rows })
+  } catch (e) {
+    next(e)
+  }
+})
+
+app.post('/api/expense-categories', settingsLimit, requireAuth, requireUserAdmin, async (req: AuthedRequest, res, next) => {
+  try {
+    const input = expenseCategoryLabelInput.parse(req.body)
+    const category = await pool.query(`insert into expense_categories(organization_id,name,color) values($1,$2,$3) returning id,name,color,active`, [req.auth!.organizationId, input.name, input.color])
+    await pool.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'expense_category',$3,'create',$4)`, [req.auth!.organizationId, req.auth!.userId, category.rows[0].id, JSON.stringify(input)])
+    res.status(201).json(category.rows[0])
+  } catch (e) {
+    if ((e as { code?: string }).code === '23505') return res.status(409).json({ error: 'Nama kategori sudah digunakan' })
+    next(e)
+  }
+})
+
+app.patch('/api/expense-categories/:id', settingsLimit, requireAuth, requireUserAdmin, async (req: AuthedRequest, res, next) => {
+  try {
+    const input = expenseCategoryLabelInput.parse(req.body), org = req.auth!.organizationId
+    if (input.active === false) {
+      const active = await pool.query('select count(*)::int count from expense_categories where organization_id=$1 and active and id<>$2', [org, req.params.id])
+      if (!active.rows[0].count) return res.status(409).json({ error: 'Minimal satu kategori harus tetap aktif' })
+    }
+    const category = await pool.query(`update expense_categories set name=$1,color=$2,active=coalesce($3,active),updated_at=now() where id=$4 and organization_id=$5 returning id,name,color,active`, [input.name, input.color, input.active ?? null, req.params.id, org])
+    if (!category.rowCount) return res.status(404).json({ error: 'Kategori tidak ditemukan' })
+    await pool.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'expense_category',$3,'update',$4)`, [org, req.auth!.userId, category.rows[0].id, JSON.stringify(input)])
+    res.json(category.rows[0])
+  } catch (e) {
+    if ((e as { code?: string }).code === '23505') return res.status(409).json({ error: 'Nama kategori sudah digunakan' })
     next(e)
   }
 })
@@ -507,6 +565,7 @@ app.post('/api/backups', settingsLimit, requireAuth, requireUserAdmin, async (re
         items = await c.query(`select i.* from purchase_request_items i join purchase_requests p on p.id=i.purchase_request_id where p.organization_id=$1`, [org]),
         budgets = await c.query(`select * from budget_periods where organization_id=$1`, [org]),
         categories = await c.query(`select bc.* from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id where bp.organization_id=$1`, [org]),
+        expenseCategories = await c.query(`select * from expense_categories where organization_id=$1`, [org]),
         reconciliations = await c.query(`select * from account_reconciliations where organization_id=$1`, [org]),
         audit = await c.query(`select * from audit_logs where organization_id=$1 order by created_at desc limit 5000`, [org])
       const snapshot = {
@@ -521,6 +580,7 @@ app.post('/api/backups', settingsLimit, requireAuth, requireUserAdmin, async (re
           purchaseRequestItems: items.rows,
           budgets: budgets.rows,
           budgetCategories: categories.rows,
+          expenseCategories: expenseCategories.rows,
           reconciliations: reconciliations.rows,
           auditLogs: audit.rows,
         },
@@ -584,7 +644,7 @@ app.get('/api/bootstrap', requireAuth, async (req: AuthedRequest, res) => {
       [org],
     ),
     pool.query(
-      `select t.id,to_char(t.transaction_date,'YYYY-MM-DD') date,t.description,t.category,t.kind,t.status,coalesce(t.reference,'') reference,coalesce(t.counterparty,'') counterparty,coalesce(t.invoice_number,'') "invoiceNumber",coalesce(t.income_source,'') "incomeSource",coalesce(t.payment_method,'') "paymentMethod",coalesce(t.proof_url,'') "proofUrl",coalesce(t.budget_category_id::text,'') "budgetCategoryId",coalesce(t.budget_item_name,'') "budgetItemName",coalesce((select ea.id::text from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by abs(e.amount) desc limit 1),'') "accountId",(t.kind in('income','expense') and not exists(select 1 from bills b where b.paid_transaction_id=t.id)) editable,coalesce((select e.amount from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by case when t.kind in('deposit_topup','deposit_usage') and ea.kind='deposit' then 0 else 1 end,abs(e.amount) desc limit 1),0)::numeric amount,coalesce((select ea.name from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by case when t.kind in('deposit_topup','deposit_usage') and ea.kind='deposit' then 0 else 1 end,abs(e.amount) desc limit 1),'') account from transactions t where t.organization_id=$1 and t.status<>'reversed' and t.kind<>'reversal' and not exists(select 1 from transactions r where r.reversal_of=t.id and r.status='posted') order by t.transaction_date desc,t.created_at desc limit 100`,
+      `select t.id,to_char(t.transaction_date,'YYYY-MM-DD') date,t.description,coalesce((select ec.name from expense_categories ec where ec.id=t.expense_category_id),t.category) category,t.kind,t.status,coalesce(t.reference,'') reference,coalesce(t.counterparty,'') counterparty,coalesce(t.invoice_number,'') "invoiceNumber",coalesce(t.income_source,'') "incomeSource",coalesce(t.payment_method,'') "paymentMethod",coalesce(t.proof_url,'') "proofUrl",coalesce(t.budget_category_id::text,'') "budgetCategoryId",coalesce(t.budget_item_name,'') "budgetItemName",coalesce((select ea.id::text from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by abs(e.amount) desc limit 1),'') "accountId",(t.kind in('income','expense') and not exists(select 1 from bills b where b.paid_transaction_id=t.id)) editable,coalesce((select e.amount from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by case when t.kind in('deposit_topup','deposit_usage') and ea.kind='deposit' then 0 else 1 end,abs(e.amount) desc limit 1),0)::numeric amount,coalesce((select ea.name from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by case when t.kind in('deposit_topup','deposit_usage') and ea.kind='deposit' then 0 else 1 end,abs(e.amount) desc limit 1),'') account from transactions t where t.organization_id=$1 and t.status<>'reversed' and t.kind<>'reversal' and not exists(select 1 from transactions r where r.reversal_of=t.id and r.status='posted') order by t.transaction_date desc,t.created_at desc limit 100`,
       [org],
     ),
     pool.query(`select id,vendor,description,to_char(due_date,'YYYY-MM-DD') "dueDate",amount::numeric,unit_price::numeric "unitPrice",quantity::numeric,coalesce(payment_method,'') "paymentMethod",currency,recurrence,case when status='paid' then 'paid' when due_date<current_date then 'overdue' when due_date<=current_date+interval '7 days' then 'due' else 'upcoming' end status,coalesce(owner_name,'') owner,auto_renew "autoRenew",reminder_days "reminderDays",paid_transaction_id "paidTransactionId" from bills where organization_id=$1 and status<>'cancelled' order by case when status='paid' then 1 else 0 end,due_date`, [org]),
@@ -845,13 +905,12 @@ app.post('/api/income', requireAuth, async (req: AuthedRequest, res, next) => {
   }
 })
 
-const expenseCategories = ['Utilities & Langganan', 'Konsumsi & Pantry', 'Kebersihan & Perlengkapan', 'Kegiatan', 'Personalia', 'Lain-Lain'] as const
 const expenseInput = z.object({
   transactionDate: z.iso.date(),
   amount: z.number().positive().max(1e15),
   accountId: z.string().uuid(),
   description: z.string().trim().min(3).max(240),
-  category: z.enum(expenseCategories),
+  category: z.string().trim().min(2).max(80),
   budgetCategoryId: z.string().uuid().optional(),
   budgetItemName: z.string().trim().min(2).max(80).optional(),
   counterparty: z.string().trim().max(120).optional(),
@@ -887,7 +946,8 @@ app.post('/api/expenses', requireAuth, requireFinance, async (req: AuthedRequest
       }
       await c.query(`insert into accounts(organization_id,name,kind,currency,color) values($1,'Pengeluaran','clearing',$2,'#d89b50') on conflict(organization_id,name) do nothing`, [org, source.rows[0].currency])
       const counterpart = await c.query(`select id from accounts where organization_id=$1 and name='Pengeluaran' and kind='clearing' and active`, [org])
-      const transaction = await c.query(`insert into transactions(organization_id,transaction_date,kind,status,description,category,counterparty,budget_category_id,budget_item_name,payment_method,proof_url,created_by,posted_by,posted_at) values($1,$2::date,'expense','posted',$3,$4,$5,$6,$7,$8,$9,$10,$10,now()) returning id,status`, [org, input.transactionDate, input.description, input.category, input.counterparty || null, input.budgetCategoryId || null, input.budgetItemName || null, input.paymentMethod, input.proofUrl || null, req.auth!.userId])
+      const expenseCategory = await getExpenseCategory(c, org, input.category)
+      const transaction = await c.query(`insert into transactions(organization_id,transaction_date,kind,status,description,category,expense_category_id,counterparty,budget_category_id,budget_item_name,payment_method,proof_url,created_by,posted_by,posted_at) values($1,$2::date,'expense','posted',$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,now()) returning id,status`, [org, input.transactionDate, input.description, expenseCategory.name, expenseCategory.id, input.counterparty || null, input.budgetCategoryId || null, input.budgetItemName || null, input.paymentMethod, input.proofUrl || null, req.auth!.userId])
       await c.query(`insert into transaction_entries(transaction_id,account_id,amount) values($1,$2,$3),($1,$4,$5)`, [transaction.rows[0].id, source.rows[0].id, -input.amount, counterpart.rows[0].id, input.amount])
       await c.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'transaction',$3,'create_and_post_expense',$4)`, [
         org,
@@ -1133,8 +1193,9 @@ app.post('/api/bills/:id/pay', requireAuth, requireFinance, async (req: AuthedRe
       if (input.budgetCategoryId) budgetCheck = await assertBudgetAvailable(c, org, input.budgetCategoryId, input.amount, undefined, req.auth!.role, input.overrideReason)
       await c.query(`insert into accounts(organization_id,name,kind,currency,color) values($1,'Pengeluaran','clearing',$2,'#d89b50') on conflict(organization_id,name) do nothing`, [org, source.rows[0].currency])
       const counterpart = await c.query(`select id from accounts where organization_id=$1 and name='Pengeluaran' and kind='clearing' and active`, [org])
-      const category = input.budgetCategoryId ? (await c.query('select name from budget_categories where id=$1', [input.budgetCategoryId])).rows[0].name : 'Layanan & langganan'
-      const transaction = await c.query(`insert into transactions(organization_id,transaction_date,kind,status,description,category,reference,counterparty,budget_category_id,created_by,posted_by,posted_at) values($1,$2::date,'expense','posted',$3,$4,$5,$6,$7,$8,$8,now()) returning id`, [org, input.transactionDate, `${bill.rows[0].vendor} — ${bill.rows[0].description}`.slice(0, 240), category, input.reference || null, bill.rows[0].vendor, input.budgetCategoryId || null, req.auth!.userId])
+      const budgetExpenseCategory = input.budgetCategoryId ? await c.query(`select ec.id,ec.name from budget_categories bc left join expense_categories ec on ec.id=bc.expense_category_id where bc.id=$1`, [input.budgetCategoryId]) : null
+      const category = budgetExpenseCategory?.rows[0]?.name ? budgetExpenseCategory.rows[0] : await getFallbackExpenseCategory(c, org, 'Utilities & Langganan')
+      const transaction = await c.query(`insert into transactions(organization_id,transaction_date,kind,status,description,category,expense_category_id,reference,counterparty,budget_category_id,created_by,posted_by,posted_at) values($1,$2::date,'expense','posted',$3,$4,$5,$6,$7,$8,$9,$9,now()) returning id`, [org, input.transactionDate, `${bill.rows[0].vendor} — ${bill.rows[0].description}`.slice(0, 240), category.name, category.id, input.reference || null, bill.rows[0].vendor, input.budgetCategoryId || null, req.auth!.userId])
       await c.query(`insert into transaction_entries(transaction_id,account_id,amount) values($1,$2,$3),($1,$4,$5)`, [transaction.rows[0].id, source.rows[0].id, -input.amount, counterpart.rows[0].id, input.amount])
       await c.query(`update bills set status='paid',paid_transaction_id=$1,paid_at=now(),paid_by=$2 where id=$3`, [transaction.rows[0].id, req.auth!.userId, bill.rows[0].id])
       let nextBillId = null
@@ -1332,7 +1393,8 @@ app.patch('/api/transactions/:id', requireAuth, requireFinance, async (req: Auth
       }
       await c.query(`insert into accounts(organization_id,name,kind,currency,color) values($1,'Pengeluaran','clearing',$2,'#d89b50') on conflict(organization_id,name) do nothing`, [org, source.rows[0].currency])
       const counterpart = await c.query(`select id from accounts where organization_id=$1 and name='Pengeluaran' and kind='clearing' and active`, [org])
-      replacement = await c.query(`insert into transactions(organization_id,transaction_date,kind,status,description,category,counterparty,budget_category_id,budget_item_name,purchase_request_id,payment_method,proof_url,created_by,posted_by,posted_at,replaces_transaction_id) values($1,$2::date,'expense','posted',$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,now(),$12) returning id`, [org, expense.transactionDate, expense.description, expense.category, expense.counterparty || null, expense.budgetCategoryId || null, expense.budgetItemName || null, old.purchase_request_id, expense.paymentMethod, expense.proofUrl || null, req.auth!.userId, old.id])
+      const expenseCategory = await getExpenseCategory(c, org, expense.category)
+      replacement = await c.query(`insert into transactions(organization_id,transaction_date,kind,status,description,category,expense_category_id,counterparty,budget_category_id,budget_item_name,purchase_request_id,payment_method,proof_url,created_by,posted_by,posted_at,replaces_transaction_id) values($1,$2::date,'expense','posted',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,now(),$13) returning id`, [org, expense.transactionDate, expense.description, expenseCategory.name, expenseCategory.id, expense.counterparty || null, expense.budgetCategoryId || null, expense.budgetItemName || null, old.purchase_request_id, expense.paymentMethod, expense.proofUrl || null, req.auth!.userId, old.id])
       await c.query(`insert into transaction_entries(transaction_id,account_id,amount) values($1,$2,$3),($1,$4,$5)`, [replacement.rows[0].id, source.rows[0].id, -expense.amount, counterpart.rows[0].id, expense.amount])
       if (old.purchase_request_id) {
         await c.query(`update purchase_requests set payment_transaction_id=$1,paid_amount=$2,paid_by=$3,payment_reference=$4,proof_reference=$5 where id=$6`, [replacement.rows[0].id, expense.amount, req.auth!.userId, expense.paymentMethod, expense.proofUrl || null, old.purchase_request_id])
@@ -1490,7 +1552,9 @@ app.post('/api/purchase-requests/:id/pay', requireAuth, requireFinance, async (r
       if (p.rows[0].budget_category_id) budgetCheck = await assertBudgetAvailable(c, org, p.rows[0].budget_category_id, input.amount, p.rows[0].id, req.auth!.role, input.overrideReason)
       await c.query(`insert into accounts(organization_id,name,kind,currency,color) values($1,'Pengeluaran','clearing',$2,'#d89b50') on conflict(organization_id,name) do nothing`, [org, source.rows[0].currency])
       const counterpart = await c.query(`select id from accounts where organization_id=$1 and name='Pengeluaran' and kind='clearing' and active`, [org])
-      const transaction = await c.query(`insert into transactions(organization_id,transaction_date,kind,status,description,category,counterparty,budget_category_id,purchase_request_id,payment_method,proof_url,created_by,posted_by,posted_at) values($1,$2::date,'expense','posted',$3,$4,$5,$6,$7,$8,$9,$10,$10,now()) returning id`, [org, input.transactionDate, p.rows[0].title, p.rows[0].budget_category_id ? (await c.query('select name from budget_categories where id=$1', [p.rows[0].budget_category_id])).rows[0].name : 'Kebutuhan kantor', p.rows[0].vendor || null, p.rows[0].budget_category_id, p.rows[0].id, input.paymentMethod, input.proofReference || null, req.auth!.userId])
+      const budgetExpenseCategory = p.rows[0].budget_category_id ? await c.query(`select ec.id,ec.name from budget_categories bc left join expense_categories ec on ec.id=bc.expense_category_id where bc.id=$1`, [p.rows[0].budget_category_id]) : null
+      const category = budgetExpenseCategory?.rows[0]?.name ? budgetExpenseCategory.rows[0] : await getFallbackExpenseCategory(c, org, 'Lain-Lain')
+      const transaction = await c.query(`insert into transactions(organization_id,transaction_date,kind,status,description,category,expense_category_id,counterparty,budget_category_id,purchase_request_id,payment_method,proof_url,created_by,posted_by,posted_at) values($1,$2::date,'expense','posted',$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,now()) returning id`, [org, input.transactionDate, p.rows[0].title, category.name, category.id, p.rows[0].vendor || null, p.rows[0].budget_category_id, p.rows[0].id, input.paymentMethod, input.proofReference || null, req.auth!.userId])
       await c.query(`insert into transaction_entries(transaction_id,account_id,amount) values($1,$2,$3),($1,$4,$5)`, [transaction.rows[0].id, source.rows[0].id, -input.amount, counterpart.rows[0].id, input.amount])
       await c.query(`update purchase_requests set status='purchased',payment_transaction_id=$1,paid_amount=$2,paid_at=now(),paid_by=$3,payment_reference=$4,proof_reference=$5 where id=$6`, [transaction.rows[0].id, input.amount, req.auth!.userId, input.paymentMethod, input.proofReference || null, p.rows[0].id])
       await c.query(`insert into purchase_events(purchase_request_id,from_status,to_status,actor_id,note) values($1,'approved','purchased',$2,$3)`, [p.rows[0].id, req.auth!.userId, input.proofReference ? 'Pembayaran dicatat dengan bukti' : 'Pembayaran dicatat'])
@@ -1524,7 +1588,7 @@ app.post('/api/purchase-requests/:id/pay', requireAuth, requireFinance, async (r
 const monthInput = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/)
 const budgetCategoryInput = z.object({
   name: z.string().trim().min(2).max(80),
-  expenseCategory: z.enum(expenseCategories),
+  expenseCategory: z.string().trim().min(2).max(80),
   details: z.array(z.string().trim().min(2).max(80)).max(30).default([]),
   budgetModel: z.enum(['fixed', 'multi_item']).default('fixed'),
   lineItems: z
@@ -1568,7 +1632,7 @@ app.get('/api/reports', requireAuth, async (req: AuthedRequest, res, next) => {
         `select coalesce(sum(case when t.kind='income' then te.amount when t.kind='reversal' and original.kind='income' then te.amount else 0 end),0)::numeric income,coalesce(sum(case when t.kind in('expense','deposit_usage') then -te.amount when t.kind='reversal' and original.kind in('expense','deposit_usage') then -te.amount else 0 end),0)::numeric expense,(select coalesce(sum(a.opening_balance+coalesce((select sum(case when tx.status='posted' then e.amount else 0 end) from transaction_entries e join transactions tx on tx.id=e.transaction_id where e.account_id=a.id),0)),0) from accounts a where a.organization_id=$1 and a.kind='deposit' and a.active)::numeric "depositBalance" from transactions t join transaction_entries te on te.transaction_id=t.id join accounts a on a.id=te.account_id left join transactions original on original.id=t.reversal_of where t.organization_id=$1 and t.status='posted' and a.kind in('bank','cash','ewallet','deposit') and date_trunc('month',t.transaction_date)=$2::date`,
         [org, start],
       ),
-      pool.query(`select t.category name,coalesce(sum(case when t.kind in('expense','deposit_usage') then -te.amount when t.kind='reversal' and original.kind in('expense','deposit_usage') then -te.amount else 0 end),0)::numeric value from transactions t join transaction_entries te on te.transaction_id=t.id join accounts a on a.id=te.account_id left join transactions original on original.id=t.reversal_of where t.organization_id=$1 and t.status='posted' and a.kind in('bank','cash','ewallet','deposit') and date_trunc('month',t.transaction_date)=$2::date and (t.kind in('expense','deposit_usage') or (t.kind='reversal' and original.kind in('expense','deposit_usage'))) group by t.category having sum(-te.amount)<>0 order by abs(sum(te.amount)) desc`, [org, start]),
+      pool.query(`select coalesce(ec.name,max(t.category)) name,coalesce(ec.color,'#8b9692') color,coalesce(sum(case when t.kind in('expense','deposit_usage') then -te.amount when t.kind='reversal' and original.kind in('expense','deposit_usage') then -te.amount else 0 end),0)::numeric value from transactions t join transaction_entries te on te.transaction_id=t.id join accounts a on a.id=te.account_id left join transactions original on original.id=t.reversal_of left join expense_categories ec on ec.id=coalesce(t.expense_category_id,original.expense_category_id) where t.organization_id=$1 and t.status='posted' and a.kind in('bank','cash','ewallet','deposit') and date_trunc('month',t.transaction_date)=$2::date and (t.kind in('expense','deposit_usage') or (t.kind='reversal' and original.kind in('expense','deposit_usage'))) group by ec.id,ec.name,ec.color having sum(-te.amount)<>0 order by abs(sum(te.amount)) desc`, [org, start]),
       pool.query(`with report_months(report_month) as(select generate_series(($2::date-interval '5 months')::date,$2::date,interval '1 month')::date) select to_char(m.report_month,'YYYY-MM') as "month",coalesce(sum(case when t.kind='income' then te.amount when t.kind='reversal' and original.kind='income' then te.amount else 0 end),0)::numeric income,coalesce(sum(case when t.kind in('expense','deposit_usage') then -te.amount when t.kind='reversal' and original.kind in('expense','deposit_usage') then -te.amount else 0 end),0)::numeric expense from report_months m left join transactions t on t.organization_id=$1 and t.status='posted' and date_trunc('month',t.transaction_date)=m.report_month left join transactions original on original.id=t.reversal_of left join transaction_entries te on te.transaction_id=t.id left join accounts a on a.id=te.account_id and a.kind in('bank','cash','ewallet','deposit') where a.id is not null or t.id is null group by m.report_month order by m.report_month`, [
         org,
         start,
@@ -1590,11 +1654,11 @@ app.get('/api/budgets', requireAuth, async (req: AuthedRequest, res, next) => {
     const period = await pool.query(`select id,to_char(month,'YYYY-MM') as "month",status,coalesce(notes,'') as notes from budget_periods where organization_id=$1 and month=$2::date`, [req.auth!.organizationId, `${month}-01`])
     if (!period.rowCount) return res.json({ budget: null, categories: [] })
     const categories = await pool.query(
-      `select bc.id,bc.name,bc.category_type "categoryType",bc.budget_model "budgetModel",bc.planned_amount::numeric "plannedAmount",bc.color,coalesce(bc.expense_category,'Lain-Lain') "expenseCategory",bc.details,bc.line_items "lineItems",
+      `select bc.id,bc.name,bc.category_type "categoryType",bc.budget_model "budgetModel",bc.planned_amount::numeric "plannedAmount",bc.color,coalesce(ec.name,bc.expense_category,'Lain-Lain') "expenseCategory",coalesce(ec.id::text,'') "expenseCategoryId",bc.details,bc.line_items "lineItems",
     coalesce((select sum(-te.amount) from transactions t join transaction_entries te on te.transaction_id=t.id join accounts a on a.id=te.account_id where t.organization_id=$1 and t.status='posted' and t.budget_category_id=bc.id and a.kind in('bank','cash','ewallet')),0)::numeric actual,
     coalesce((select sum(pr.estimated_total) from purchase_requests pr where pr.organization_id=$1 and pr.budget_category_id=bc.id and pr.status='submitted'),0)::numeric "pendingAmount",
     coalesce((select sum(pr.estimated_total) from purchase_requests pr where pr.organization_id=$1 and pr.budget_category_id=bc.id and pr.status='approved'),0)::numeric "committedAmount"
-    from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id where bc.budget_period_id=$2 order by bc.created_at,bc.name`,
+    from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id left join expense_categories ec on ec.id=bc.expense_category_id where bc.budget_period_id=$2 order by bc.created_at,bc.name`,
       [req.auth!.organizationId, period.rows[0].id],
     )
     res.json({ budget: period.rows[0], categories: categories.rows })
@@ -1670,7 +1734,10 @@ app.post('/api/budgets', requireAuth, requireFinance, async (req: AuthedRequest,
     try {
       await c.query('begin')
       const created = await c.query(`insert into budget_periods(organization_id,month,notes,created_by) values($1,$2::date,$3,$4) returning id,to_char(month,'YYYY-MM') as "month",status`, [req.auth!.organizationId, `${input.month}-01`, input.notes || null, req.auth!.userId])
-      for (const category of defaults) await c.query('insert into budget_categories(budget_period_id,name,expense_category,details,budget_model,line_items,category_type,planned_amount,color) values($1,$2,$3,$4,$5,$6,$7,$8,$9)', [created.rows[0].id, category.name, category.expenseCategory, category.details, category.budgetModel, JSON.stringify(category.lineItems), category.categoryType, category.plannedAmount, category.color])
+      for (const category of defaults) {
+        const expenseCategory = await getExpenseCategory(c, req.auth!.organizationId, category.expenseCategory)
+        await c.query('insert into budget_categories(budget_period_id,name,expense_category,expense_category_id,details,budget_model,line_items,category_type,planned_amount,color) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)', [created.rows[0].id, category.name, expenseCategory.name, expenseCategory.id, category.details, category.budgetModel, JSON.stringify(category.lineItems), category.categoryType, category.plannedAmount, category.color])
+      }
       await c.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'budget_period',$3,'create',$4)`, [req.auth!.organizationId, req.auth!.userId, created.rows[0].id, JSON.stringify({ month: input.month })])
       await c.query('commit')
       res.status(201).json(created.rows[0])
@@ -1698,7 +1765,7 @@ app.post('/api/budgets/copy-previous', requireAuth, requireFinance, async (req: 
         return res.status(404).json({ error: 'RAB bulan sebelumnya belum tersedia' })
       }
       const created = await c.query(`insert into budget_periods(organization_id,month,notes,created_by) values($1,$2::date,'Disalin dari bulan sebelumnya',$3) returning id`, [req.auth!.organizationId, `${month}-01`, req.auth!.userId])
-      await c.query(`insert into budget_categories(budget_period_id,name,expense_category,details,budget_model,line_items,category_type,planned_amount,color) select $1,name,expense_category,details,budget_model,line_items,category_type,planned_amount,color from budget_categories where budget_period_id=$2`, [created.rows[0].id, previous.rows[0].id])
+      await c.query(`insert into budget_categories(budget_period_id,name,expense_category,expense_category_id,details,budget_model,line_items,category_type,planned_amount,color) select $1,name,expense_category,expense_category_id,details,budget_model,line_items,category_type,planned_amount,color from budget_categories where budget_period_id=$2`, [created.rows[0].id, previous.rows[0].id])
       await c.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'budget_period',$3,'copy_previous',$4)`, [req.auth!.organizationId, req.auth!.userId, created.rows[0].id, JSON.stringify({ month })])
       await c.query('commit')
       res.status(201).json({ id: created.rows[0].id })
@@ -1720,7 +1787,8 @@ app.post('/api/budgets/:id/categories', requireAuth, requireFinance, async (req:
     const period = await pool.query(`select id,status from budget_periods where id=$1 and organization_id=$2`, [req.params.id, req.auth!.organizationId])
     if (!period.rowCount) return res.status(404).json({ error: 'RAB tidak ditemukan' })
     if (period.rows[0].status === 'closed') return res.status(409).json({ error: 'RAB yang sudah ditutup tidak dapat diubah' })
-    const category = await pool.query(`insert into budget_categories(budget_period_id,name,expense_category,details,budget_model,line_items,category_type,planned_amount,color) values($1,$2,$3,$4,$5,$6,$7,$8,$9) returning id`, [period.rows[0].id, input.name, input.expenseCategory, input.details, input.budgetModel, JSON.stringify(input.lineItems), input.categoryType, input.plannedAmount, input.color])
+    const expenseCategory = await getExpenseCategory(pool, req.auth!.organizationId, input.expenseCategory)
+    const category = await pool.query(`insert into budget_categories(budget_period_id,name,expense_category,expense_category_id,details,budget_model,line_items,category_type,planned_amount,color) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning id`, [period.rows[0].id, input.name, expenseCategory.name, expenseCategory.id, input.details, input.budgetModel, JSON.stringify(input.lineItems), input.categoryType, input.plannedAmount, input.color])
     await pool.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'budget_category',$3,'create',$4)`, [req.auth!.organizationId, req.auth!.userId, category.rows[0].id, JSON.stringify(input)])
     res.status(201).json({ id: category.rows[0].id })
   } catch (e) {
@@ -1732,7 +1800,8 @@ app.post('/api/budgets/:id/categories', requireAuth, requireFinance, async (req:
 app.patch('/api/budget-categories/:id', requireAuth, requireFinance, async (req: AuthedRequest, res, next) => {
   try {
     const input = normalizedBudgetCategory(budgetCategoryInput.parse(req.body))
-    const category = await pool.query(`update budget_categories bc set name=$1,expense_category=$2,details=$3,budget_model=$4,line_items=$5,category_type=$6,planned_amount=$7,color=$8,updated_at=now() from budget_periods bp where bc.id=$9 and bp.id=bc.budget_period_id and bp.organization_id=$10 and bp.status<>'closed' returning bc.id`, [input.name, input.expenseCategory, input.details, input.budgetModel, JSON.stringify(input.lineItems), input.categoryType, input.plannedAmount, input.color, req.params.id, req.auth!.organizationId])
+    const expenseCategory = await getExpenseCategory(pool, req.auth!.organizationId, input.expenseCategory)
+    const category = await pool.query(`update budget_categories bc set name=$1,expense_category=$2,expense_category_id=$3,details=$4,budget_model=$5,line_items=$6,category_type=$7,planned_amount=$8,color=$9,updated_at=now() from budget_periods bp where bc.id=$10 and bp.id=bc.budget_period_id and bp.organization_id=$11 and bp.status<>'closed' returning bc.id`, [input.name, expenseCategory.name, expenseCategory.id, input.details, input.budgetModel, JSON.stringify(input.lineItems), input.categoryType, input.plannedAmount, input.color, req.params.id, req.auth!.organizationId])
     if (!category.rowCount)
       return res.status(404).json({
         error: 'Pos anggaran tidak ditemukan atau RAB sudah ditutup',

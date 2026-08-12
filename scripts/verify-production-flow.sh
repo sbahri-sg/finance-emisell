@@ -32,6 +32,9 @@ done
 [ "$ready" = true ]
 
 curl -fsS -c "$cookie_file" -H 'Content-Type: application/json' -d '{"organizationName":"Integration Test","fullName":"Test Owner","email":"owner@test.invalid","password":"IntegrationOnly-2026"}' "$base/api/auth/setup" | jq -e '.ok==true' >/dev/null
+custom_category_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"name":"Pajak & Legal","color":"#9b6f45"}' "$base/api/expense-categories" | jq -er '.id')
+curl -fsS -b "$cookie_file" -X PATCH -H 'Content-Type: application/json' -d '{"name":"Pajak & Kepatuhan","color":"#9b6f45","active":true}' "$base/api/expense-categories/$custom_category_id" | jq -e '.name=="Pajak & Kepatuhan"' >/dev/null
+curl -fsS -b "$cookie_file" "$base/api/settings" | jq -e --arg category "$custom_category_id" '([.expenseCategories[]|select(.id==$category and .name=="Pajak & Kepatuhan" and .active==true)]|length)==1' >/dev/null
 account_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"name":"Bank Test","institution":"Test Bank","kind":"bank","currency":"IDR","openingBalance":10000000,"color":"#225c55"}' "$base/api/accounts" | jq -er '.id')
 deposit_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"name":"Meta Ads Test","institution":"Meta","kind":"deposit","currency":"IDR","openingBalance":0,"lowBalanceThreshold":500000,"color":"#4f78a5"}' "$base/api/accounts" | jq -er '.id')
 budget_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"month":"2026-08"}' "$base/api/budgets" | jq -er '.id')

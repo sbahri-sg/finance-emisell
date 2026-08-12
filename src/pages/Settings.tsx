@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Bell, Building2, CheckCircle2, Database, Download, FileDown, KeyRound, Landmark, LockKeyhole, LogOut, Save, ShieldCheck, SlidersHorizontal, Users } from 'lucide-react'
+import { Bell, Building2, CheckCircle2, Database, Download, FileDown, KeyRound, Landmark, LockKeyhole, LogOut, Pencil, Plus, Save, ShieldCheck, SlidersHorizontal, Tags, Users } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Badge, Button, Card, PageHeader } from '../components/ui'
 import { useFinance } from '../lib/FinanceContext'
 import { formatCurrency } from '../lib/format'
+import type { ExpenseCategoryLabel } from '../types'
 
 type Tab='company'|'finance'|'notifications'|'approval'|'security'|'data'
 type SettingsData={
   profile:{name:string;legalName:string;taxId:string;financeEmail:string;address:string;timezone:string;baseCurrency:'IDR'|'USD'}
   settings:{defaultAccountId:string;transactionPrefix:string;purchasePrefix:string;minimumCashBalance:number;billReminderDays:number;notifyBills:boolean;notifyLowDeposit:boolean;notifyPurchaseApproval:boolean;notifyReconciliation:boolean;ownerApprovalThreshold:number;sessionHours:number;updatedAt:string}
   accounts:Array<{id:string;name:string;kind:string}>
+  expenseCategories:ExpenseCategoryLabel[]
   canAdmin:boolean
 }
 type Session={id:string;createdAt:string;lastSeenAt:string;expiresAt:string;current:boolean}
@@ -29,6 +31,7 @@ export function Settings(){
   const [backups,setBackups]=useState<Backup[]>([])
   const [loading,setLoading]=useState(true),[saving,setSaving]=useState(false)
   const [message,setMessage]=useState(''),[error,setError]=useState('')
+  const [editingCategoryId,setEditingCategoryId]=useState<string|null>(null)
   const canFinance=['owner','admin','finance'].includes(user?.role||'')
 
   const load=useCallback(async()=>{setLoading(true);setError('');try{const response=await fetch('/api/settings',{credentials:'include'}),body=await response.json() as SettingsData&{error?:string};if(!response.ok)throw new Error(body.error||'Pengaturan belum dapat dimuat');body.settings.minimumCashBalance=Number(body.settings.minimumCashBalance);body.settings.ownerApprovalThreshold=Number(body.settings.ownerApprovalThreshold);setData(body)}catch(e){setError(e instanceof Error?e.message:'Terjadi kesalahan')}finally{setLoading(false)}},[])
@@ -42,6 +45,8 @@ export function Settings(){
   async function saveFinance(form:FormData){const ok=await request('/api/settings/preferences','PATCH',{defaultAccountId:String(form.get('defaultAccountId')),transactionPrefix:String(form.get('transactionPrefix')),purchasePrefix:String(form.get('purchasePrefix')),minimumCashBalance:Number(form.get('minimumCashBalance'))});if(ok)await load()}
   async function saveNotifications(form:FormData){const ok=await request('/api/settings/notifications','PATCH',{billReminderDays:Number(form.get('billReminderDays')),notifyBills:form.get('notifyBills')==='on',notifyLowDeposit:form.get('notifyLowDeposit')==='on',notifyPurchaseApproval:form.get('notifyPurchaseApproval')==='on',notifyReconciliation:form.get('notifyReconciliation')==='on'});if(ok)await load()}
   async function saveGovernance(form:FormData){const ok=await request('/api/settings/governance','PATCH',{ownerApprovalThreshold:Number(form.get('ownerApprovalThreshold')),sessionHours:Number(form.get('sessionHours'))});if(ok)await load()}
+  async function saveExpenseCategory(form:FormData){const id=String(form.get('id')||'');const current=data?.expenseCategories.find(item=>item.id===id);const ok=await request(id?`/api/expense-categories/${id}`:'/api/expense-categories',id?'PATCH':'POST',{name:String(form.get('name')).trim(),color:String(form.get('color')),active:current?.active});if(ok){setEditingCategoryId(null);await load();(document.getElementById('new-expense-category') as HTMLFormElement|null)?.reset()}}
+  async function toggleExpenseCategory(category:ExpenseCategoryLabel){if(await request(`/api/expense-categories/${category.id}`,'PATCH',{name:category.name,color:category.color,active:!category.active}))await load()}
   async function changePassword(form:FormData){const currentPassword=String(form.get('currentPassword')),newPassword=String(form.get('newPassword')),confirmation=String(form.get('confirmation'));if(newPassword!==confirmation){setError('Konfirmasi kata sandi baru tidak sama');return}const ok=await request('/api/auth/change-password','POST',{currentPassword,newPassword});if(ok){(document.getElementById('password-form') as HTMLFormElement)?.reset();await loadSessions()}}
   async function revokeOthers(){if(await request('/api/auth/sessions/others','DELETE'))await loadSessions()}
   async function createBackup(){if(await request('/api/backups','POST'))await loadBackups()}
@@ -65,11 +70,14 @@ export function Settings(){
         <label className="span-2">Alamat<textarea name="address" defaultValue={data.profile.address} maxLength={500} disabled={locked}/></label>{!locked&&<SaveActions saving={saving}/>}
       </form></Card>}
 
-      {active==='finance'&&<Card><SettingHeading title="Preferensi keuangan" description="Standar pencatatan yang dipakai seluruh tim." locked={locked}/><form className="form-grid" action={saveFinance}>
+      {active==='finance'&&<><Card><SettingHeading title="Preferensi keuangan" description="Standar pencatatan yang dipakai seluruh tim." locked={locked}/><form className="form-grid" action={saveFinance}>
         <label className="span-2">Rekening utama<select name="defaultAccountId" defaultValue={data.settings.defaultAccountId} disabled={locked}><option value="">Belum ditentukan</option>{data.accounts.map(account=><option key={account.id} value={account.id}>{account.name}</option>)}</select><small>Menjadi pilihan awal saat mencatat pemasukan atau pengeluaran.</small></label>
         <label>Prefix transaksi<input name="transactionPrefix" defaultValue={data.settings.transactionPrefix} required minLength={2} maxLength={12} pattern="[A-Za-z0-9-]+" disabled={locked}/></label><label>Prefix pengajuan<input name="purchasePrefix" defaultValue={data.settings.purchasePrefix} required minLength={2} maxLength={12} pattern="[A-Za-z0-9-]+" disabled={locked}/></label>
         <label className="span-2">Batas minimum kas<input name="minimumCashBalance" type="number" min="0" step="1000" defaultValue={data.settings.minimumCashBalance} disabled={locked}/><small>Peringatan muncul jika total dana likuid melewati batas ini.</small></label>{!locked&&<SaveActions saving={saving}/>}
-      </form></Card>}
+      </form></Card><Card className="settings-secondary-card"><SettingHeading title="Label kategori pengeluaran" description="Label dipakai untuk RAB, transaksi, pengajuan, dan pengelompokan laporan." locked={locked}/><div className="expense-category-settings">
+        <div className="expense-category-list">{data.expenseCategories.map(category=>editingCategoryId===category.id?<form className="expense-category-edit" action={saveExpenseCategory} key={category.id}><input type="hidden" name="id" value={category.id}/><input name="color" type="color" defaultValue={category.color} disabled={locked}/><input name="name" required minLength={2} maxLength={80} defaultValue={category.name} disabled={locked}/><Button type="submit" disabled={saving||locked}><Save size={14}/> Simpan</Button><Button variant="secondary" onClick={()=>setEditingCategoryId(null)}>Batal</Button></form>:<div className={`expense-category-item ${category.active?'':'inactive'}`} key={category.id}><i style={{background:category.color}}/><span><strong>{category.name}</strong><small>{category.transactionCount||0} transaksi · {category.budgetCount||0} pos RAB</small></span><Badge tone={category.active?'success':'neutral'}>{category.active?'Aktif':'Nonaktif'}</Badge>{!locked&&<><button aria-label={`Edit ${category.name}`} onClick={()=>setEditingCategoryId(category.id)}><Pencil size={15}/></button><button className="category-toggle" onClick={()=>void toggleExpenseCategory(category)}>{category.active?'Nonaktifkan':'Aktifkan'}</button></>}</div>)}</div>
+        {!locked&&<form id="new-expense-category" className="expense-category-create" action={saveExpenseCategory}><span><Tags size={19}/><strong>Tambah label baru</strong></span><input name="name" required minLength={2} maxLength={80} placeholder="Contoh: Pajak & Legal"/><input name="color" type="color" defaultValue="#4f78a5" aria-label="Warna kategori"/><Button type="submit" disabled={saving}><Plus size={15}/> Tambah</Button></form>}
+      </div></Card></>}
 
       {active==='notifications'&&<Card><SettingHeading title="Notifikasi operasional" description="Tentukan kondisi yang perlu muncul sebagai perhatian tim." locked={locked}/><form className="settings-form-stack" action={saveNotifications}>
         <label className="settings-inline-field"><span><strong>Pengingat tagihan</strong><small>Tampilkan sebelum tanggal jatuh tempo.</small></span><select name="billReminderDays" defaultValue={data.settings.billReminderDays} disabled={locked}><option value="3">3 hari sebelumnya</option><option value="7">7 hari sebelumnya</option><option value="14">14 hari sebelumnya</option><option value="30">30 hari sebelumnya</option></select></label>
