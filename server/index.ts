@@ -584,7 +584,7 @@ app.get('/api/bootstrap', requireAuth, async (req: AuthedRequest, res) => {
       [org],
     ),
     pool.query(
-      `select t.id,to_char(t.transaction_date,'YYYY-MM-DD') date,t.description,t.category,t.kind,t.status,coalesce(t.reference,'') reference,coalesce(t.counterparty,'') counterparty,coalesce(t.invoice_number,'') "invoiceNumber",coalesce(t.income_source,'') "incomeSource",coalesce(t.payment_method,'') "paymentMethod",coalesce(t.proof_url,'') "proofUrl",coalesce((select e.amount from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by case when t.kind in('deposit_topup','deposit_usage') and ea.kind='deposit' then 0 else 1 end,abs(e.amount) desc limit 1),0)::numeric amount,coalesce((select ea.name from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by case when t.kind in('deposit_topup','deposit_usage') and ea.kind='deposit' then 0 else 1 end,abs(e.amount) desc limit 1),'') account from transactions t where t.organization_id=$1 and t.status<>'reversed' and t.kind<>'reversal' and not exists(select 1 from transactions r where r.reversal_of=t.id and r.status='posted') order by t.transaction_date desc,t.created_at desc limit 100`,
+      `select t.id,to_char(t.transaction_date,'YYYY-MM-DD') date,t.description,t.category,t.kind,t.status,coalesce(t.reference,'') reference,coalesce(t.counterparty,'') counterparty,coalesce(t.invoice_number,'') "invoiceNumber",coalesce(t.income_source,'') "incomeSource",coalesce(t.payment_method,'') "paymentMethod",coalesce(t.proof_url,'') "proofUrl",coalesce(t.budget_category_id::text,'') "budgetCategoryId",coalesce((select ea.id::text from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by abs(e.amount) desc limit 1),'') "accountId",(t.kind in('income','expense') and t.purchase_request_id is null and not exists(select 1 from bills b where b.paid_transaction_id=t.id)) editable,coalesce((select e.amount from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by case when t.kind in('deposit_topup','deposit_usage') and ea.kind='deposit' then 0 else 1 end,abs(e.amount) desc limit 1),0)::numeric amount,coalesce((select ea.name from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by case when t.kind in('deposit_topup','deposit_usage') and ea.kind='deposit' then 0 else 1 end,abs(e.amount) desc limit 1),'') account from transactions t where t.organization_id=$1 and t.status<>'reversed' and t.kind<>'reversal' and not exists(select 1 from transactions r where r.reversal_of=t.id and r.status='posted') order by t.transaction_date desc,t.created_at desc limit 100`,
       [org],
     ),
     pool.query(`select id,vendor,description,to_char(due_date,'YYYY-MM-DD') "dueDate",amount::numeric,unit_price::numeric "unitPrice",quantity::numeric,coalesce(payment_method,'') "paymentMethod",currency,recurrence,case when status='paid' then 'paid' when due_date<current_date then 'overdue' when due_date<=current_date+interval '7 days' then 'due' else 'upcoming' end status,coalesce(owner_name,'') owner,auto_renew "autoRenew",reminder_days "reminderDays",paid_transaction_id "paidTransactionId" from bills where organization_id=$1 and status<>'cancelled' order by case when status='paid' then 1 else 0 end,due_date`, [org]),
@@ -1264,6 +1264,64 @@ app.post('/api/transactions/:id/reverse', requireAuth, requireFinance, async (re
     }
   } catch (e) {
     next(e)
+  }
+})
+
+app.patch('/api/transactions/:id', requireAuth, requireFinance, async (req: AuthedRequest, res, next) => {
+  const org = req.auth!.organizationId
+  const c = await pool.connect()
+  try {
+    await c.query('begin')
+    const original = await c.query(`select * from transactions where id=$1 and organization_id=$2 and status='posted' and reversal_of is null and kind in('income','expense') for update`, [req.params.id, org])
+    if (!original.rowCount) {
+      await c.query('rollback')
+      return res.status(409).json({ error: 'Transaksi tidak ditemukan atau tidak dapat diedit' })
+    }
+    const old = original.rows[0]
+    const linkedBill = await c.query('select 1 from bills where paid_transaction_id=$1', [old.id])
+    if (old.purchase_request_id || linkedBill.rowCount) {
+      await c.query('rollback')
+      return res.status(409).json({ error: 'Pembayaran pengajuan atau tagihan harus dikoreksi dari modul asalnya' })
+    }
+    const existing = await c.query('select 1 from transactions where reversal_of=$1 or replaces_transaction_id=$1', [old.id])
+    if (existing.rowCount) {
+      await c.query('rollback')
+      return res.status(409).json({ error: 'Transaksi ini sudah pernah dikoreksi' })
+    }
+    const input = old.kind === 'income' ? incomeInput.parse(req.body) : expenseInput.parse(req.body)
+    const reversal = await c.query(`insert into transactions(organization_id,transaction_date,kind,status,description,category,budget_category_id,created_by,posted_by,posted_at,reversal_of) values($1,$2::date,'reversal','posted',$3,$4,$5,$6,$6,now(),$7) returning id`, [org, old.transaction_date, `Edit: ${old.description}`.slice(0, 240), old.category, old.budget_category_id, req.auth!.userId, old.id])
+    await c.query(`insert into transaction_entries(transaction_id,account_id,amount) select $1,account_id,-amount from transaction_entries where transaction_id=$2`, [reversal.rows[0].id, old.id])
+
+    let replacement
+    if (old.kind === 'income') {
+      const income = input as z.infer<typeof incomeInput>
+      const source = incomeSources[income.sourceType]
+      const destination = await c.query(`select id,currency from accounts where id=$1 and organization_id=$2 and active and kind in('bank','cash','ewallet') for update`, [income.accountId, org])
+      if (!destination.rowCount) throw Object.assign(new Error('Rekening penerima tidak valid atau tidak aktif'), { statusCode: 400 })
+      await c.query(`insert into accounts(organization_id,name,kind,currency,color) values($1,$2,'clearing',$3,$4) on conflict(organization_id,name) do nothing`, [org, source.counterpart, destination.rows[0].currency, income.sourceType === 'owner_capital' ? '#607d73' : income.sourceType === 'company_loan' ? '#776a91' : '#225c55'])
+      const counterpart = await c.query(`select id from accounts where organization_id=$1 and name=$2 and kind='clearing' and active`, [org, source.counterpart])
+      replacement = await c.query(`insert into transactions(organization_id,transaction_date,kind,status,description,category,counterparty,income_source,payment_method,proof_url,created_by,posted_by,posted_at,replaces_transaction_id) values($1,$2::date,'income','posted',$3,$4,$5,$6,$7,$8,$9,$9,now(),$10) returning id`, [org, income.transactionDate, income.description, source.category, income.counterparty || null, income.sourceType, income.paymentMethod, income.proofUrl || null, req.auth!.userId, old.id])
+      await c.query(`insert into transaction_entries(transaction_id,account_id,amount) values($1,$2,$3),($1,$4,$5)`, [replacement.rows[0].id, destination.rows[0].id, income.amount, counterpart.rows[0].id, -income.amount])
+    } else {
+      const expense = input as z.infer<typeof expenseInput>
+      const source = await c.query(`select id,currency from accounts where id=$1 and organization_id=$2 and active and kind in('bank','cash','ewallet') for update`, [expense.accountId, org])
+      if (!source.rowCount) throw Object.assign(new Error('Rekening pembayaran tidak valid atau tidak aktif'), { statusCode: 400 })
+      let budgetCheck = null
+      if (expense.budgetCategoryId) budgetCheck = await assertBudgetAvailable(c, org, expense.budgetCategoryId, expense.amount, undefined, req.auth!.role, expense.overrideReason)
+      await c.query(`insert into accounts(organization_id,name,kind,currency,color) values($1,'Pengeluaran','clearing',$2,'#d89b50') on conflict(organization_id,name) do nothing`, [org, source.rows[0].currency])
+      const counterpart = await c.query(`select id from accounts where organization_id=$1 and name='Pengeluaran' and kind='clearing' and active`, [org])
+      replacement = await c.query(`insert into transactions(organization_id,transaction_date,kind,status,description,category,counterparty,budget_category_id,payment_method,proof_url,created_by,posted_by,posted_at,replaces_transaction_id) values($1,$2::date,'expense','posted',$3,$4,$5,$6,$7,$8,$9,$9,now(),$10) returning id`, [org, expense.transactionDate, expense.description, expense.category, expense.counterparty || null, expense.budgetCategoryId || null, expense.paymentMethod, expense.proofUrl || null, req.auth!.userId, old.id])
+      await c.query(`insert into transaction_entries(transaction_id,account_id,amount) values($1,$2,$3),($1,$4,$5)`, [replacement.rows[0].id, source.rows[0].id, -expense.amount, counterpart.rows[0].id, expense.amount])
+      void budgetCheck
+    }
+    await c.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'transaction',$3,'edit_replace',$4)`, [org, req.auth!.userId, old.id, JSON.stringify({ reversalId: reversal.rows[0].id, replacementId: replacement.rows[0].id, previousDescription: old.description })])
+    await c.query('commit')
+    res.json({ id: replacement.rows[0].id })
+  } catch (e) {
+    await c.query('rollback')
+    next(e)
+  } finally {
+    c.release()
   }
 })
 

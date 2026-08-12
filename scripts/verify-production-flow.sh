@@ -61,9 +61,19 @@ bill_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"
 bill_payload=$(jq -nc --arg account "$account_id" --arg category "$category_id" '{transactionDate:"2026-08-11",accountId:$account,amount:100000,reference:"BILL-TEST-001",budgetCategoryId:$category}')
 curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d "$bill_payload" "$base/api/bills/$bill_id/pay" | jq -e '.transactionId!=null and .nextBillId!=null' >/dev/null
 
-curl -fsS -b "$cookie_file" "$base/api/bootstrap" | jq -e --arg account "$account_id" --arg deposit "$deposit_id" '(.accounts[]|select(.id==$account)|.balance|tonumber)==6950000 and (.accounts[]|select(.id==$deposit)|.balance|tonumber)==1700000' >/dev/null
-curl -fsS -b "$cookie_file" "$base/api/reports?month=2026-08" | jq -e '(.summary.expense|tonumber)==1350000 and (.summary.depositBalance|tonumber)==1700000' >/dev/null
-reconcile_payload=$(jq -nc '{statementDate:"2026-08-11",statementBalance:6950000,note:"Integration test"}')
+income_payload=$(jq -nc --arg account "$account_id" '{transactionDate:"2026-08-11",accountId:$account,amount:500000,description:"Income sebelum edit",sourceType:"service_income",paymentMethod:"transfer"}')
+income_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d "$income_payload" "$base/api/income" | jq -er '.id')
+income_edit=$(jq -nc --arg account "$account_id" '{transactionDate:"2026-08-11",accountId:$account,amount:700000,description:"Income setelah edit",sourceType:"service_income",paymentMethod:"transfer"}')
+curl -fsS -b "$cookie_file" -X PATCH -H 'Content-Type: application/json' -d "$income_edit" "$base/api/transactions/$income_id" | jq -er '.id' >/dev/null
+
+expense_payload=$(jq -nc --arg account "$account_id" '{transactionDate:"2026-08-11",accountId:$account,amount:100000,description:"Expense sebelum edit",category:"Lain-Lain",paymentMethod:"transfer"}')
+expense_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d "$expense_payload" "$base/api/expenses" | jq -er '.id')
+expense_edit=$(jq -nc --arg account "$account_id" '{transactionDate:"2026-08-11",accountId:$account,amount:150000,description:"Expense setelah edit",category:"Lain-Lain",paymentMethod:"cash"}')
+curl -fsS -b "$cookie_file" -X PATCH -H 'Content-Type: application/json' -d "$expense_edit" "$base/api/transactions/$expense_id" | jq -er '.id' >/dev/null
+
+curl -fsS -b "$cookie_file" "$base/api/bootstrap" | jq -e --arg account "$account_id" --arg deposit "$deposit_id" '(.accounts[]|select(.id==$account)|.balance|tonumber)==7500000 and (.accounts[]|select(.id==$deposit)|.balance|tonumber)==1700000 and ([.transactions[]|select(.description=="Income sebelum edit" or .description=="Expense sebelum edit")]|length)==0 and ([.transactions[]|select(.description=="Income setelah edit" or .description=="Expense setelah edit")]|length)==2' >/dev/null
+curl -fsS -b "$cookie_file" "$base/api/reports?month=2026-08" | jq -e '(.summary.income|tonumber)==700000 and (.summary.expense|tonumber)==1500000 and (.summary.depositBalance|tonumber)==1700000' >/dev/null
+reconcile_payload=$(jq -nc '{statementDate:"2026-08-11",statementBalance:7500000,note:"Integration test"}')
 curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d "$reconcile_payload" "$base/api/accounts/$account_id/reconcile" | jq -e '.difference==0' >/dev/null
 
 curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"status":"closed"}' "$base/api/budgets/$budget_id/status" | jq -e '.ok==true' >/dev/null

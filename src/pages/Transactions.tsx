@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { ArrowDownLeft, ArrowUpRight, BanknoteArrowDown, Check, Download, Filter, Plus, RotateCcw, Search, Trash2 } from 'lucide-react'
+import { ArrowDownLeft, ArrowUpRight, BanknoteArrowDown, Check, Download, Filter, Pencil, Plus, RotateCcw, Search, Trash2 } from 'lucide-react'
 import { Badge, Button, Card, Modal, PageHeader } from '../components/ui'
 import { useFinance } from '../lib/FinanceContext'
 import { formatDate, formatIDR } from '../lib/format'
@@ -16,6 +16,7 @@ export function Transactions() {
   const [kind, setKind] = useState('all')
   const [modal, setModal] = useState(false)
   const [expenseModal, setExpenseModal] = useState(false)
+  const [editing, setEditing] = useState<Transaction | null>(null)
   const [reversal, setReversal] = useState<Transaction | null>(null)
   const [budgetCategories, setBudgetCategories] = useState<BudgetCategory[]>([])
   const [saving, setSaving] = useState(false)
@@ -28,10 +29,12 @@ export function Transactions() {
     const action = searchParams.get('buat')
     if (action === 'income') {
       setError('')
+      setEditing(null)
       setModal(true)
     }
     if (action === 'expense' && canPost) {
       setError('')
+      setEditing(null)
       setExpenseModal(true)
     }
     if (action) {
@@ -75,8 +78,8 @@ export function Transactions() {
         paymentMethod: String(formData.get('paymentMethod')),
         proofUrl: String(formData.get('proofUrl')).trim() || undefined,
       }
-      const response = await fetch('/api/income', {
-        method: 'POST',
+      const response = await fetch(editing ? `/api/transactions/${editing.id}` : '/api/income', {
+        method: editing ? 'PATCH' : 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -87,6 +90,7 @@ export function Transactions() {
       if (!response.ok) throw new Error(body.error || 'Dana masuk belum dapat disimpan')
       await refresh()
       setModal(false)
+      setEditing(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Terjadi kesalahan')
     } finally {
@@ -109,8 +113,8 @@ export function Transactions() {
         proofUrl: String(formData.get('proofUrl')).trim() || undefined,
         overrideReason: String(formData.get('overrideReason')).trim() || undefined,
       }
-      const response = await fetch('/api/expenses', {
-        method: 'POST',
+      const response = await fetch(editing ? `/api/transactions/${editing.id}` : '/api/expenses', {
+        method: editing ? 'PATCH' : 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -121,6 +125,7 @@ export function Transactions() {
       if (!response.ok) throw new Error(body.error || 'Pengeluaran belum dapat disimpan')
       await refresh()
       setExpenseModal(false)
+      setEditing(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Terjadi kesalahan')
     } finally {
@@ -168,6 +173,12 @@ export function Transactions() {
       setSaving(false)
     }
   }
+  function editTransaction(transaction: Transaction) {
+    setError('')
+    setEditing(transaction)
+    if (transaction.kind === 'income') setModal(true)
+    else setExpenseModal(true)
+  }
   async function postTransaction(id: string) {
     setSaving(true)
     setError('')
@@ -205,6 +216,7 @@ export function Transactions() {
                 variant="secondary"
                 onClick={() => {
                   setError('')
+                  setEditing(null)
                   setExpenseModal(true)
                 }}
               >
@@ -214,6 +226,7 @@ export function Transactions() {
             <Button
               onClick={() => {
                 setError('')
+                setEditing(null)
                 setModal(true)
               }}
             >
@@ -316,6 +329,11 @@ export function Transactions() {
                         </button>
                       ) : canPost && trx.status === 'posted' && trx.kind !== 'reversal' ? (
                         <>
+                          {trx.editable && (
+                            <button className="approve" aria-label={`Edit ${trx.description}`} onClick={() => editTransaction(trx)}>
+                              <Pencil size={13} /> Edit
+                            </button>
+                          )}
                           <button
                             className="reject"
                             aria-label={`Koreksi ${trx.description}`}
@@ -354,10 +372,11 @@ export function Transactions() {
 
       {modal && (
         <Modal
-          title="Catat dana masuk"
-          description="Dana dicatat ke rekening perusahaan dengan jurnal berpasangan."
+          title={editing ? 'Edit dana masuk' : 'Catat dana masuk'}
+          description={editing ? 'Data lama digantikan di daftar dan rekap; jejak audit tetap tersimpan.' : 'Dana dicatat ke rekening perusahaan dengan jurnal berpasangan.'}
           onClose={() => {
             setModal(false)
+            setEditing(null)
             setError('')
           }}
         >
@@ -365,7 +384,7 @@ export function Transactions() {
             {error && <div className="auth-error span-2">{error}</div>}
             <label>
               Sumber dana
-              <select name="sourceType" defaultValue="service_income">
+              <select name="sourceType" defaultValue={editing?.incomeSource || 'service_income'}>
                 <option value="product_sale">Penjualan produk</option>
                 <option value="service_income">Pendapatan jasa</option>
                 <option value="commission">Komisi/afiliasi</option>
@@ -377,15 +396,15 @@ export function Transactions() {
             </label>
             <label>
               Tanggal diterima
-              <input name="transactionDate" type="date" required defaultValue={today} />
+              <input name="transactionDate" type="date" required defaultValue={editing?.date || today} />
             </label>
             <label>
               Nominal
-              <input name="amount" type="number" min="1" max="1000000000000000" step="1" required placeholder="0" />
+              <input name="amount" type="number" min="1" max="1000000000000000" step="1" required defaultValue={editing ? Math.abs(editing.amount) : undefined} placeholder="0" />
             </label>
             <label>
               Masuk ke rekening
-              <select name="accountId" required defaultValue={settings.defaultAccountId}>
+              <select name="accountId" required defaultValue={editing?.accountId || settings.defaultAccountId}>
                 <option value="" disabled>
                   Pilih rekening
                 </option>
@@ -398,15 +417,15 @@ export function Transactions() {
             </label>
             <label className="span-2">
               Deskripsi
-              <input name="description" required minLength={3} maxLength={240} placeholder="Contoh: Pembayaran jasa pengelolaan iklan Agustus" />
+              <input name="description" required minLength={3} maxLength={240} defaultValue={editing?.description || ''} placeholder="Contoh: Pembayaran jasa pengelolaan iklan Agustus" />
             </label>
             <label>
               Nama pelanggan/pengirim <span className="optional-label">Opsional</span>
-              <input name="counterparty" maxLength={120} placeholder="Nama perusahaan atau pengirim" />
+              <input name="counterparty" maxLength={120} defaultValue={editing?.counterparty || ''} placeholder="Nama perusahaan atau pengirim" />
             </label>
             <label>
               Metode
-              <select name="paymentMethod" defaultValue="transfer">
+              <select name="paymentMethod" defaultValue={editing?.paymentMethod || 'transfer'}>
                 <option value="transfer">Transfer</option>
                 <option value="ewallet">E-Wallet</option>
                 <option value="cash">Cash</option>
@@ -414,7 +433,7 @@ export function Transactions() {
             </label>
             <label>
               Link bukti transaksi <span className="optional-label">Opsional</span>
-              <input name="proofUrl" type="url" maxLength={500} placeholder="https://..." />
+              <input name="proofUrl" type="url" maxLength={500} defaultValue={editing?.proofUrl || ''} placeholder="https://..." />
             </label>
             <div className="income-journal-note span-2">
               <BanknoteArrowDown size={20} />
@@ -428,13 +447,14 @@ export function Transactions() {
                 variant="secondary"
                 onClick={() => {
                   setModal(false)
+                  setEditing(null)
                   setError('')
                 }}
               >
                 Batal
               </Button>
               <Button type="submit" disabled={saving}>
-                {saving ? 'Menyimpan…' : 'Simpan dana masuk'}
+                {saving ? 'Menyimpan…' : editing ? 'Simpan perubahan' : 'Simpan dana masuk'}
               </Button>
             </div>
           </form>
@@ -442,10 +462,11 @@ export function Transactions() {
       )}
       {expenseModal && (
         <Modal
-          title="Catat pengeluaran"
-          description="Gunakan untuk biaya yang tidak melalui pengajuan belanja."
+          title={editing ? 'Edit pengeluaran' : 'Catat pengeluaran'}
+          description={editing ? 'Data lama digantikan di daftar dan rekap; jejak audit tetap tersimpan.' : 'Gunakan untuk biaya yang tidak melalui pengajuan belanja.'}
           onClose={() => {
             setExpenseModal(false)
+            setEditing(null)
             setError('')
           }}
         >
@@ -453,15 +474,15 @@ export function Transactions() {
             {error && <div className="auth-error span-2">{error}</div>}
             <label>
               Tanggal pembayaran
-              <input name="transactionDate" type="date" required defaultValue={today} />
+              <input name="transactionDate" type="date" required defaultValue={editing?.date || today} />
             </label>
             <label>
               Nominal
-              <input name="amount" type="number" min="1" step="1" required />
+              <input name="amount" type="number" min="1" step="1" required defaultValue={editing ? Math.abs(editing.amount) : undefined} />
             </label>
             <label>
               Rekening
-              <select name="accountId" required defaultValue="">
+              <select name="accountId" required defaultValue={editing?.accountId || ''}>
                 <option value="" disabled>
                   Pilih rekening
                 </option>
@@ -474,7 +495,7 @@ export function Transactions() {
             </label>
             <label>
               Kategori
-              <select name="category" defaultValue="Utilities & Langganan">
+              <select name="category" defaultValue={editing?.category || 'Utilities & Langganan'}>
                 <option>Utilities & Langganan</option>
                 <option>Konsumsi & Pantry</option>
                 <option>Kebersihan & Perlengkapan</option>
@@ -485,7 +506,7 @@ export function Transactions() {
             </label>
             <label className="span-2">
               Pos RAB
-              <select name="budgetCategoryId">
+              <select name="budgetCategoryId" defaultValue={editing?.budgetCategoryId || ''}>
                 <option value="">Di luar RAB</option>
                 {budgetCategories.map((category) => (
                   <option value={category.id} key={category.id}>
@@ -496,15 +517,15 @@ export function Transactions() {
             </label>
             <label className="span-2">
               Deskripsi
-              <input name="description" required minLength={3} maxLength={240} />
+              <input name="description" required minLength={3} maxLength={240} defaultValue={editing?.description || ''} />
             </label>
             <label>
               PIC
-              <input name="counterparty" maxLength={120} />
+              <input name="counterparty" maxLength={120} defaultValue={editing?.counterparty || ''} />
             </label>
             <label>
               Metode
-              <select name="paymentMethod" defaultValue="transfer">
+              <select name="paymentMethod" defaultValue={editing?.paymentMethod || 'transfer'}>
                 <option value="transfer">Transfer</option>
                 <option value="ewallet">E-Wallet</option>
                 <option value="cash">Cash</option>
@@ -512,7 +533,7 @@ export function Transactions() {
             </label>
             <label className="span-2">
               Link bukti transaksi <span className="optional-label">Opsional</span>
-              <input name="proofUrl" type="url" maxLength={500} placeholder="https://..." />
+              <input name="proofUrl" type="url" maxLength={500} defaultValue={editing?.proofUrl || ''} placeholder="https://..." />
             </label>
             <label className="span-2">
               Alasan override RAB <span className="optional-label">Jika diperlukan</span>
@@ -526,11 +547,17 @@ export function Transactions() {
               </div>
             </div>
             <div className="modal-actions span-2">
-              <Button variant="secondary" onClick={() => setExpenseModal(false)}>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setExpenseModal(false)
+                  setEditing(null)
+                }}
+              >
                 Batal
               </Button>
               <Button type="submit" disabled={saving}>
-                {saving ? 'Menyimpan…' : 'Simpan pengeluaran'}
+                {saving ? 'Menyimpan…' : editing ? 'Simpan perubahan' : 'Simpan pengeluaran'}
               </Button>
             </div>
           </form>

@@ -28,6 +28,8 @@ export interface Transaction {
   description: string
   category: string
   account: string
+  accountId?: string
+  budgetCategoryId?: string
   kind: TransactionKind
   amount: number
   status: TransactionStatus
@@ -38,6 +40,7 @@ export interface Transaction {
   incomeSource?: string
   paymentMethod?: 'transfer' | 'ewallet' | 'cash'
   proofUrl?: string
+  editable?: boolean
 }
 
 export interface Bill {
