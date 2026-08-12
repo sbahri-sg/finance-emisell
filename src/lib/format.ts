@@ -16,11 +16,16 @@ export function formatCurrency(value: number, currency: 'IDR' | 'USD') {
 }
 
 export function formatDate(value: string) {
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value)
+  const date = new Date(dateOnly ? `${value}T00:00:00+07:00` : value)
+  if (!Number.isFinite(date.getTime())) return '—'
+
   return new Intl.DateTimeFormat('id-ID', {
     day: '2-digit',
     month: 'short',
     year: 'numeric',
-  }).format(new Date(`${value}T00:00:00`))
+    timeZone: 'Asia/Jakarta',
+  }).format(date)
 }
 
 export function initials(value: string) {

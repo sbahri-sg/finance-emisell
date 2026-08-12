@@ -36,6 +36,8 @@ export interface Transaction {
   counterparty?: string
   invoiceNumber?: string
   incomeSource?: string
+  paymentMethod?: 'transfer' | 'ewallet' | 'cash'
+  proofUrl?: string
 }
 
 export interface Bill {
@@ -51,6 +53,9 @@ export interface Bill {
   autoRenew: boolean
   reminderDays?: number[]
   paidTransactionId?: string
+  unitPrice?: number
+  quantity?: number
+  paymentMethod?: 'transfer' | 'ewallet' | 'cash'
 }
 
 export interface DepositAccount {
@@ -113,6 +118,8 @@ export interface BudgetCategory {
   pendingAmount: number
   committedAmount: number
   color: string
+  expenseCategory?: string
+  details?: string[]
 }
 
 export interface WorkspaceUser {
