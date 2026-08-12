@@ -23,7 +23,9 @@ select distinct bp.organization_id,bc.expense_category,'#607d73' from budget_cat
 alter table transactions add column if not exists expense_category_id uuid references expense_categories(id) on delete restrict;
 alter table budget_categories add column if not exists expense_category_id uuid references expense_categories(id) on delete restrict;
 
+alter table transactions disable trigger transactions_immutable;
 update transactions t set expense_category_id=ec.id from expense_categories ec where ec.organization_id=t.organization_id and lower(ec.name)=lower(t.category) and t.expense_category_id is null;
+alter table transactions enable trigger transactions_immutable;
 update budget_categories bc set expense_category_id=ec.id from budget_periods bp,expense_categories ec where bp.id=bc.budget_period_id and ec.organization_id=bp.organization_id and lower(ec.name)=lower(bc.expense_category) and bc.expense_category_id is null;
 
 create index if not exists transactions_expense_category_idx on transactions(expense_category_id) where expense_category_id is not null;
