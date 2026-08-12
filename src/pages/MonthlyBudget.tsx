@@ -147,7 +147,14 @@ export function MonthlyBudget() {
     setCategoryModal(true)
   }
   function updateLineItem(index: number, field: keyof BudgetLineItem, value: string) {
-    setLineItems((current) => current.map((item, itemIndex) => (itemIndex === index ? { ...item, [field]: field === 'name' ? value : Number(value) } : item)))
+    setLineItems((current) =>
+      current.map((item, itemIndex) => {
+        if (itemIndex !== index) return item
+        if (field === 'name') return { ...item, name: value }
+        if (field === 'quantity') return { ...item, quantity: Math.max(1, Math.trunc(Number(value) || 1)) }
+        return { ...item, unitPrice: Math.max(0, Number(value) || 0) }
+      }),
+    )
   }
   const lineItemsTotal = lineItems.reduce((sum, item) => sum + numberValue(item.quantity) * numberValue(item.unitPrice), 0)
   async function saveCategory(formData: FormData) {
@@ -448,7 +455,7 @@ export function MonthlyBudget() {
                 {lineItems.map((item, index) => (
                   <div className="budget-line-row" key={index}>
                     <input required minLength={2} maxLength={80} value={item.name} onChange={(event) => updateLineItem(index, 'name', event.target.value)} placeholder="Contoh: Galon" />
-                    <input required type="number" min="0.01" step="0.01" value={item.quantity} onChange={(event) => updateLineItem(index, 'quantity', event.target.value)} />
+                    <input required type="number" min="1" step="1" inputMode="numeric" value={item.quantity} onWheel={(event) => event.currentTarget.blur()} onChange={(event) => updateLineItem(index, 'quantity', event.target.value)} />
                     <input required type="number" min="0" step="1" value={item.unitPrice} onChange={(event) => updateLineItem(index, 'unitPrice', event.target.value)} />
                     <strong>{formatIDR(item.quantity * item.unitPrice)}</strong>
                     <button type="button" aria-label={`Hapus ${item.name || 'item'}`} onClick={() => setLineItems((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={15} /></button>

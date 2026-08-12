@@ -1531,7 +1531,7 @@ const budgetCategoryInput = z.object({
     .array(
       z.object({
         name: z.string().trim().min(2).max(80),
-        quantity: z.number().positive().max(1e6),
+        quantity: z.number().int().positive().max(1e6),
         unitPrice: z.number().nonnegative().max(1e15),
       }),
     )
