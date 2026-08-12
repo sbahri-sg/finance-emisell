@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { ArrowDownLeft, ArrowUpRight, BanknoteArrowDown, Check, Download, Filter, Pencil, Plus, RotateCcw, Search, Trash2 } from 'lucide-react'
+import { ArrowDownLeft, ArrowUpRight, BanknoteArrowDown, Check, Download, Filter, Pencil, Plus, Search, Trash2 } from 'lucide-react'
 import { Badge, Button, Card, Modal, PageHeader } from '../components/ui'
 import { useFinance } from '../lib/FinanceContext'
 import { formatDate, formatIDR } from '../lib/format'
@@ -17,7 +17,6 @@ export function Transactions() {
   const [modal, setModal] = useState(false)
   const [expenseModal, setExpenseModal] = useState(false)
   const [editing, setEditing] = useState<Transaction | null>(null)
-  const [reversal, setReversal] = useState<Transaction | null>(null)
   const [budgetCategories, setBudgetCategories] = useState<BudgetCategory[]>([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -132,32 +131,6 @@ export function Transactions() {
       setSaving(false)
     }
   }
-  async function reverseTransaction(formData: FormData) {
-    if (!reversal) return
-    setSaving(true)
-    setError('')
-    try {
-      const response = await fetch(`/api/transactions/${reversal.id}/reverse`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          transactionDate: String(formData.get('transactionDate')),
-          reason: String(formData.get('reason')).trim(),
-        }),
-      })
-      const body = (await response.json().catch(() => ({}))) as {
-        error?: string
-      }
-      if (!response.ok) throw new Error(body.error || 'Koreksi belum dapat disimpan')
-      await refresh()
-      setReversal(null)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Terjadi kesalahan')
-    } finally {
-      setSaving(false)
-    }
-  }
   async function removeTransaction(transaction: Transaction) {
     if (!window.confirm(`Hapus ${transaction.description}? Sistem tetap menyimpan jejak koreksi untuk audit.`)) return
     setSaving(true)
@@ -235,7 +208,7 @@ export function Transactions() {
           </>
         }
       />
-      {error && !modal && !expenseModal && !reversal && (
+      {error && !modal && !expenseModal && (
         <div className="budget-alert error">
           <span>{error}</span>
           <button onClick={() => setError('')}>Tutup</button>
@@ -330,20 +303,10 @@ export function Transactions() {
                       ) : canPost && trx.status === 'posted' && trx.kind !== 'reversal' ? (
                         <>
                           {trx.editable && (
-                            <button className="approve" aria-label={`Edit ${trx.description}`} onClick={() => editTransaction(trx)}>
-                              <Pencil size={13} /> Edit
+                            <button className="approve icon-action" title="Edit" aria-label={`Edit ${trx.description}`} onClick={() => editTransaction(trx)}>
+                              <Pencil size={14} />
                             </button>
                           )}
-                          <button
-                            className="reject"
-                            aria-label={`Koreksi ${trx.description}`}
-                            onClick={() => {
-                              setError('')
-                              setReversal(trx)
-                            }}
-                          >
-                            <RotateCcw size={14} />
-                          </button>
                           <button className="reject" aria-label={`Hapus ${trx.description}`} onClick={() => void removeTransaction(trx)}>
                             <Trash2 size={14} />
                           </button>
@@ -558,37 +521,6 @@ export function Transactions() {
               </Button>
               <Button type="submit" disabled={saving}>
                 {saving ? 'Menyimpan…' : editing ? 'Simpan perubahan' : 'Simpan pengeluaran'}
-              </Button>
-            </div>
-          </form>
-        </Modal>
-      )}
-      {reversal && (
-        <Modal
-          title="Koreksi dengan reversal"
-          description={reversal.description}
-          onClose={() => {
-            setReversal(null)
-            setError('')
-          }}
-        >
-          <form className="form-grid" action={reverseTransaction}>
-            {error && <div className="auth-error span-2">{error}</div>}
-            <label className="span-2">
-              Tanggal koreksi
-              <input name="transactionDate" type="date" required defaultValue={today} />
-            </label>
-            <label className="span-2">
-              Alasan koreksi
-              <textarea name="reason" required minLength={5} maxLength={500} />
-            </label>
-            <div className="form-note span-2">Transaksi asli tidak dihapus. Sistem membuat jurnal kebalikan agar jejak audit tetap lengkap.</div>
-            <div className="modal-actions span-2">
-              <Button variant="secondary" onClick={() => setReversal(null)}>
-                Batal
-              </Button>
-              <Button type="submit" variant="danger" disabled={saving}>
-                {saving ? 'Menyimpan…' : 'Buat reversal'}
               </Button>
             </div>
           </form>
