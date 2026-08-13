@@ -202,7 +202,13 @@ export function Transactions() {
     if (!categoryId) return
     const category = budgetCategories.find((item) => item.id === categoryId)
     if (!category) return
-    setExpenseCategory(category.expenseCategory || 'Lain-Lain')
+    if (category.expenseCategoryActive === false) {
+      setExpenseCategory(expenseCategories[0]?.name || '')
+      setError(`Kategori pada Pos RAB “${category.name}” sudah nonaktif. Pilih kategori aktif atau perbarui Pos RAB.`)
+    } else {
+      setExpenseCategory(category.expenseCategory || expenseCategories[0]?.name || '')
+      setError('')
+    }
   }
   function toggleBudgetItem(itemId: string, checked: boolean) {
     if (!selectedExpenseBudget) return
@@ -553,11 +559,11 @@ export function Transactions() {
             )}
             <label className="span-2">
               Kategori pencatatan
-              <select name="category" value={expenseCategory} disabled={Boolean(selectedExpenseBudget)} onChange={(event) => setExpenseCategory(event.target.value)}>
+              <select name="category" value={expenseCategory} disabled={Boolean(selectedExpenseBudget?.expenseCategoryActive)} onChange={(event) => setExpenseCategory(event.target.value)}>
                 {expenseCategory && !expenseCategories.some((category) => category.name === expenseCategory) && <option value={expenseCategory}>{expenseCategory} — nonaktif</option>}
                 {expenseCategories.map((category) => <option value={category.name} key={category.id}>{category.name}</option>)}
               </select>
-              <span className="field-help">{selectedExpenseBudget ? `Otomatis mengikuti pos RAB “${selectedExpenseBudget.name}”.` : 'Pilih manual untuk pengeluaran di luar RAB.'}</span>
+              <span className="field-help">{selectedExpenseBudget?.expenseCategoryActive ? `Otomatis mengikuti pos RAB “${selectedExpenseBudget.name}”.` : selectedExpenseBudget ? 'Kategori lama pada Pos RAB sudah nonaktif. Pilih kategori aktif untuk transaksi ini.' : 'Pilih manual untuk pengeluaran di luar RAB.'}</span>
             </label>
             <label className="span-2">
               Deskripsi

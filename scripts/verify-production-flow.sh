@@ -58,6 +58,7 @@ curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"transactio
 curl -fsS -b "$cookie_file" "$base/api/budgets?month=2026-08" | jq -e --arg category "$category_id" '(.categories[]|select(.id==$category)|.lineItems[]|select(.name=="ATK")|.remainingQuantity)==10 and (.categories[]|select(.id==$category)|.lineItems[]|select(.name=="Galon")|.remainingQuantity)==20' >/dev/null
 used_expense_category_id=$(curl -fsS -b "$cookie_file" "$base/api/settings" | jq -er '.expenseCategories[]|select(.name=="Kebersihan & Perlengkapan")|.id')
 [ "$(curl -sS -o /dev/null -w '%{http_code}' -b "$cookie_file" -X DELETE "$base/api/expense-categories/$used_expense_category_id")" = 409 ]
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -b "$cookie_file" -X PATCH -H 'Content-Type: application/json' -d '{"name":"Kebersihan & Perlengkapan","color":"#6f9f72","active":false}' "$base/api/expense-categories/$used_expense_category_id")" = 409 ]
 fractional_quantity_status=$(curl -sS -o /dev/null -w '%{http_code}' -b "$cookie_file" -X PATCH -H 'Content-Type: application/json' -d '{"name":"Kebutuhan kantor","expenseCategory":"Kebersihan & Perlengkapan","details":["Galon"],"budgetModel":"multi_item","lineItems":[{"name":"Galon","quantity":1.07,"unitPrice":50000}],"categoryType":"variable","plannedAmount":53500,"color":"#d89b50"}' "$base/api/budget-categories/$category_id")
 [ "$fractional_quantity_status" = 400 ]
 

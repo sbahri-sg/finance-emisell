@@ -144,6 +144,7 @@ export interface BudgetCategory {
   color: string
   expenseCategory?: string
   expenseCategoryId?: string
+  expenseCategoryActive?: boolean
   details?: string[]
   budgetModel: BudgetModel
   lineItems: BudgetLineItem[]
