@@ -10,6 +10,9 @@ type BudgetResponse = {
   categories: BudgetCategory[]
 }
 type EditingCategory = BudgetCategory | null
+type DeleteTarget =
+  | { type: 'category'; category: BudgetCategory }
+  | { type: 'item'; category: BudgetCategory; item: BudgetLineItem; itemIndex: number }
 
 const categoryTypeLabel: Record<BudgetCategoryType, string> = {
   fixed: 'Tetap',
@@ -46,6 +49,7 @@ export function MonthlyBudget() {
   const [lineItems, setLineItems] = useState<BudgetLineItem[]>([])
   const [fixedAmount, setFixedAmount] = useState(0)
   const [expenseCategories, setExpenseCategories] = useState<ExpenseCategoryLabel[]>([])
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null)
 
   const loadBudget = useCallback(async () => {
     setLoading(true)
@@ -161,7 +165,7 @@ export function MonthlyBudget() {
     )
   }
   const lineItemsTotal = lineItems.reduce((sum, item) => sum + numberValue(item.quantity) * numberValue(item.unitPrice), 0)
-  async function removeSavedLineItem(category: BudgetCategory, item: BudgetLineItem, itemIndex: number) {
+  function askRemoveSavedLineItem(category: BudgetCategory, item: BudgetLineItem, itemIndex: number) {
     if (numberValue(item.purchasedQuantity) > 0) {
       setError(`${item.name} sudah pernah dibeli. Item dipertahankan agar histori transaksi tetap akurat.`)
       return
@@ -170,9 +174,28 @@ export function MonthlyBudget() {
       setError('Item terakhir tidak dapat dihapus. Ubah model pos menjadi “Tetap” jika rincian item tidak lagi diperlukan.')
       return
     }
-    if (!window.confirm(`Hapus “${item.name}” dari rincian RAB ${category.name}?`)) return
+    setDeleteTarget({ type: 'item', category, item, itemIndex })
+  }
+  function askRemoveCategory(category: BudgetCategory) {
+    if (!category.canDelete) {
+      setError(`${category.name} sudah dipakai oleh transaksi atau pengajuan. Pos dipertahankan agar histori tetap akurat.`)
+      return
+    }
+    setDeleteTarget({ type: 'category', category })
+  }
+  async function confirmDelete() {
+    if (!deleteTarget) return
+    if (deleteTarget.type === 'category') {
+      const ok = await request(`/api/budget-categories/${deleteTarget.category.id}`, { method: 'DELETE' })
+      if (ok) {
+        setExpandedCategoryId((current) => current === deleteTarget.category.id ? null : current)
+        setDeleteTarget(null)
+      }
+      return
+    }
+    const { category, itemIndex } = deleteTarget
     const nextItems = category.lineItems.filter((_, index) => index !== itemIndex)
-    await request(`/api/budget-categories/${category.id}`, {
+    const ok = await request(`/api/budget-categories/${category.id}`, {
       method: 'PATCH',
       body: JSON.stringify({
         name: category.name,
@@ -185,15 +208,7 @@ export function MonthlyBudget() {
         color: category.color,
       }),
     })
-  }
-  async function removeCategory(category: BudgetCategory) {
-    if (!category.canDelete) {
-      setError(`${category.name} sudah dipakai oleh transaksi atau pengajuan. Pos dipertahankan agar histori tetap akurat.`)
-      return
-    }
-    if (!window.confirm(`Hapus pos anggaran “${category.name}” beserta seluruh rincian itemnya? Tindakan ini tidak dapat dibatalkan.`)) return
-    const ok = await request(`/api/budget-categories/${category.id}`, { method: 'DELETE' })
-    if (ok) setExpandedCategoryId((current) => current === category.id ? null : current)
+    if (ok) setDeleteTarget(null)
   }
   async function saveCategory(formData: FormData) {
     if (!data.budget) return
@@ -397,7 +412,7 @@ export function MonthlyBudget() {
                           </button>
                           <button
                             className="budget-edit budget-category-delete"
-                            onClick={() => void removeCategory(category)}
+                            onClick={() => askRemoveCategory(category)}
                             aria-label={`Hapus pos ${category.name}`}
                             title={category.canDelete ? `Hapus pos ${category.name}` : 'Tidak dapat dihapus karena sudah dipakai transaksi atau pengajuan'}
                             disabled={saving || !category.canDelete}
@@ -423,7 +438,7 @@ export function MonthlyBudget() {
                                   aria-label={`Hapus ${item.name}`}
                                   title={numberValue(item.purchasedQuantity) > 0 ? 'Tidak dapat dihapus karena sudah dipakai transaksi' : `Hapus ${item.name}`}
                                   disabled={saving || numberValue(item.purchasedQuantity) > 0}
-                                  onClick={() => void removeSavedLineItem(category, item, index)}
+                                  onClick={() => askRemoveSavedLineItem(category, item, index)}
                                 >
                                   <Trash2 size={15} />
                                 </button>
@@ -546,6 +561,36 @@ export function MonthlyBudget() {
               </Button>
             </div>
           </form>
+        </Modal>
+      )}
+
+      {deleteTarget && (
+        <Modal
+          title={deleteTarget.type === 'category' ? 'Hapus pos anggaran?' : 'Hapus rincian item?'}
+          description="Konfirmasi diperlukan sebelum data dihapus"
+          onClose={() => !saving && setDeleteTarget(null)}
+        >
+          <div className="delete-confirmation">
+            <span className="delete-confirmation-icon"><Trash2 size={25} /></span>
+            <div>
+              <strong>{deleteTarget.type === 'category' ? deleteTarget.category.name : deleteTarget.item.name}</strong>
+              <p>
+                {deleteTarget.type === 'category'
+                  ? `Pos ini akan dikeluarkan dari RAB ${monthLabel(month)}${deleteTarget.category.lineItems.length ? ` beserta ${deleteTarget.category.lineItems.length} rincian item` : ''}. Total anggaran akan dihitung ulang otomatis.`
+                  : `Item ini akan dihapus dari pos ${deleteTarget.category.name}. Total pos dan total RAB akan dihitung ulang otomatis.`}
+              </p>
+            </div>
+          </div>
+          <div className="delete-confirmation-note">
+            <AlertTriangle size={17} />
+            <span>{deleteTarget.type === 'category' ? 'Histori transaksi yang sudah dibatalkan tetap disimpan untuk audit.' : 'Pastikan item ini memang tidak lagi diperlukan dalam rencana belanja.'}</span>
+          </div>
+          <div className="modal-actions delete-confirmation-actions">
+            <Button variant="secondary" onClick={() => setDeleteTarget(null)} disabled={saving}>Batal</Button>
+            <Button variant="danger" onClick={() => void confirmDelete()} disabled={saving}>
+              <Trash2 size={15} /> {saving ? 'Menghapus…' : deleteTarget.type === 'category' ? 'Hapus pos' : 'Hapus item'}
+            </Button>
+          </div>
         </Modal>
       )}
     </>
