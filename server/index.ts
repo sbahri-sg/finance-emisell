@@ -700,7 +700,7 @@ app.post('/api/purchase-requests/:id/transition', requireAuth, async (req: Authe
 
 app.get('/api/bootstrap', requireAuth, async (req: AuthedRequest, res) => {
   const org = req.auth!.organizationId
-  const [organization, accounts, transactions, bills, purchases, settings] = await Promise.all([
+  const [organization, accounts, transactions, depositActivities, bills, purchases, settings] = await Promise.all([
     pool.query('select id,name,base_currency "baseCurrency" from organizations where id=$1', [org]),
     pool.query(
       `select a.id,a.name,coalesce(a.institution,'') institution,a.kind,coalesce(a.masked_number,'') "maskedNumber",a.currency,a.color,a.credit_limit "creditLimit",a.low_balance_threshold "lowBalanceThreshold",a.opening_balance+coalesce(sum(case when t.status='posted' then e.amount else 0 end),0)::numeric balance,
@@ -716,6 +716,15 @@ app.get('/api/bootstrap', requireAuth, async (req: AuthedRequest, res) => {
       `select t.id,to_char(t.transaction_date,'YYYY-MM-DD') date,t.description,coalesce((select ec.name from expense_categories ec where ec.id=t.expense_category_id),t.category) category,t.kind,t.status,coalesce(t.reference,'') reference,coalesce(t.counterparty,'') counterparty,coalesce(t.invoice_number,'') "invoiceNumber",coalesce(t.income_source,'') "incomeSource",coalesce(t.payment_method,'') "paymentMethod",coalesce(t.proof_url,'') "proofUrl",coalesce(t.budget_category_id::text,'') "budgetCategoryId",coalesce(t.budget_item_name,'') "budgetItemName",coalesce((select jsonb_agg(jsonb_build_object('budgetItemId',tbi.budget_item_id,'itemName',tbi.item_name,'quantity',tbi.quantity,'plannedUnitPrice',tbi.planned_unit_price,'actualUnitPrice',tbi.actual_unit_price,'subtotal',tbi.subtotal) order by tbi.created_at) from transaction_budget_items tbi where tbi.transaction_id=t.id),'[]'::jsonb) "budgetItems",coalesce((select ea.id::text from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by abs(e.amount) desc limit 1),'') "accountId",(t.kind in('income','expense') and not exists(select 1 from bills b where b.paid_transaction_id=t.id)) editable,coalesce((select e.amount from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by case when t.kind in('deposit_topup','deposit_usage') and ea.kind='deposit' then 0 else 1 end,abs(e.amount) desc limit 1),0)::numeric amount,coalesce((select ea.name from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by case when t.kind in('deposit_topup','deposit_usage') and ea.kind='deposit' then 0 else 1 end,abs(e.amount) desc limit 1),'') account from transactions t where t.organization_id=$1 and t.status<>'reversed' and t.kind<>'reversal' and not exists(select 1 from transactions r where r.reversal_of=t.id and r.status='posted') order by t.transaction_date desc,t.created_at desc limit 100`,
       [org],
     ),
+    pool.query(
+      `select t.id,to_char(t.transaction_date,'YYYY-MM-DD') date,t.description,t.kind,e.amount::numeric,coalesce(t.reference,'') reference,a.id "accountId",a.name account,coalesce(a.masked_number,'') "maskedNumber",exists(select 1 from transactions r where r.reversal_of=t.id and r.status='posted') reversed,coalesce(t.reversal_of::text,'') "reversalOf"
+       from transactions t join transaction_entries e on e.transaction_id=t.id join accounts a on a.id=e.account_id
+       left join transactions original on original.id=t.reversal_of
+       where t.organization_id=$1 and t.status='posted' and a.kind='deposit'
+         and (t.kind in('deposit_topup','deposit_usage','adjustment') or (t.kind='reversal' and original.kind in('deposit_topup','deposit_usage','adjustment')))
+       order by t.transaction_date desc,t.created_at desc limit 40`,
+      [org],
+    ),
     pool.query(`select id,vendor,description,to_char(due_date,'YYYY-MM-DD') "dueDate",amount::numeric,unit_price::numeric "unitPrice",quantity::numeric,coalesce(payment_method,'') "paymentMethod",currency,recurrence,case when status='paid' then 'paid' when due_date<current_date then 'overdue' when due_date<=current_date+interval '7 days' then 'due' else 'upcoming' end status,coalesce(owner_name,'') owner,auto_renew "autoRenew",reminder_days "reminderDays",paid_transaction_id "paidTransactionId" from bills where organization_id=$1 and status<>'cancelled' and archived_at is null order by case when status='paid' then 1 else 0 end,due_date`, [org]),
     pool.query(`select p.id,p.request_number "requestNumber",to_char(p.created_at::date,'YYYY-MM-DD') "requestedAt",p.requested_by "requestedById",u.full_name "requestedBy",p.department,p.title,p.purpose,(select count(*)::int from purchase_request_items i where i.purchase_request_id=p.id) "itemCount",p.estimated_total::numeric amount,case when p.urgency='urgent' then 'Mendesak' else 'Normal' end urgency,p.status,coalesce(p.vendor,'') vendor,p.budget_category_id "budgetCategoryId",coalesce(bc.name,'') "budgetCategory",p.payment_transaction_id "paymentTransactionId",p.paid_amount::numeric "paidAmount",p.paid_at "paidAt",coalesce(p.payment_reference,'') "paymentReference",coalesce(p.proof_reference,'') "proofReference" from purchase_requests p join users u on u.id=p.requested_by left join budget_categories bc on bc.id=p.budget_category_id where p.organization_id=$1 order by p.created_at desc`, [org]),
     pool.query(`select coalesce(default_account_id::text,'') "defaultAccountId",minimum_cash_balance::numeric "minimumCashBalance",notify_bills "notifyBills",notify_low_deposit "notifyLowDeposit",notify_purchase_approval "notifyPurchaseApproval",notify_reconciliation "notifyReconciliation" from organization_settings where organization_id=$1`, [org]),
@@ -725,6 +734,7 @@ app.get('/api/bootstrap', requireAuth, async (req: AuthedRequest, res) => {
     user: req.auth,
     accounts: accounts.rows,
     transactions: transactions.rows,
+    depositActivities: depositActivities.rows,
     bills: bills.rows,
     purchaseRequests: purchases.rows,
     settings: settings.rows[0] || {},

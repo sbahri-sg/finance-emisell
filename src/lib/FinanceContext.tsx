@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
-import type { Account, Bill, DepositAccount, PurchaseRequest, Transaction } from '../types'
+import type { Account, Bill, DepositAccount, DepositActivity, PurchaseRequest, Transaction } from '../types'
 
 type WorkspaceSettings = {
   defaultAccountId: string
@@ -15,6 +15,7 @@ type FinanceData = {
   user: { userId: string; role: 'owner' | 'admin' | 'finance' | 'staff'; fullName: string } | null
   accounts: Account[]
   transactions: Transaction[]
+  depositActivities: DepositActivity[]
   bills: Bill[]
   deposits: DepositAccount[]
   purchaseRequests: PurchaseRequest[]
@@ -34,6 +35,7 @@ const empty: FinanceData = {
   user: null,
   accounts: [],
   transactions: [],
+  depositActivities: [],
   bills: [],
   deposits: [],
   purchaseRequests: [],
@@ -62,6 +64,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       user: raw.user || null,
       accounts,
       transactions: (raw.transactions || []).map((t: Record<string, unknown>) => ({ ...t, amount: Number(t.amount) })),
+      depositActivities: (raw.depositActivities || []).map((activity: Record<string, unknown>) => ({ ...activity, amount: Number(activity.amount), reversed: Boolean(activity.reversed) })),
       bills: (raw.bills || []).map((b: Record<string, unknown>) => ({
         ...b,
         amount: Number(b.amount),

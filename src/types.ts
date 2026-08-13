@@ -78,6 +78,20 @@ export interface DepositAccount {
   reconciliationDifference?: number
 }
 
+export interface DepositActivity {
+  id: string
+  date: string
+  description: string
+  kind: 'deposit_topup' | 'deposit_usage' | 'adjustment' | 'reversal'
+  amount: number
+  accountId: string
+  account: string
+  maskedNumber?: string
+  reference?: string
+  reversed: boolean
+  reversalOf?: string
+}
+
 export interface CashflowPoint {
   month: string
   income: number

@@ -14,7 +14,7 @@ type ImportBudgetCategory = BudgetCategory & { month: string }
 type SelowImportResult = { imported: number; matched: number; duplicates: number; topups: number; debits: number; statementBalance: number; balanceAdjustment: number }
 export function Deposits() {
   const navigate = useNavigate(),
-    { deposits, accounts, transactions, refresh, user } = useFinance(),
+    { deposits, accounts, depositActivities, refresh, user } = useFinance(),
     [action, setAction] = useState<{
       kind: 'topup' | 'usage'
       deposit: DepositAccount
@@ -41,7 +41,7 @@ export function Deposits() {
     daily = deposits.reduce((sum, deposit) => sum + deposit.dailyAverage, 0),
     canManage = !!user && ['owner', 'admin', 'finance'].includes(user.role),
     sources = accounts.filter((account) => ['bank', 'cash', 'ewallet'].includes(account.kind)),
-    activities = transactions.filter((transaction) => ['deposit_topup', 'deposit_usage'].includes(transaction.kind)).slice(0, 8)
+    activities = depositActivities.slice(0, 12)
   const importGroups = Array.from(new Set(importRows.filter((row) => row.amount < 0).map((row) => `${row.transactionDate.slice(0, 7)}|${row.merchant}`))),
     importTopupTotal = importRows.filter((row) => row.amount > 0).reduce((sum, row) => sum + row.amount, 0),
     importDebitTotal = importRows.filter((row) => row.amount < 0).reduce((sum, row) => sum + Math.abs(row.amount), 0),
@@ -456,11 +456,11 @@ export function Deposits() {
         <div className="activity-list">
           {activities.map((transaction) => (
             <div key={transaction.id}>
-              <span className={`activity-icon ${transaction.kind === 'deposit_topup' ? 'topup' : 'usage'}`}>{transaction.kind === 'deposit_topup' ? <ArrowDownLeft size={17} /> : <ArrowUpRight size={17} />}</span>
+              <span className={`activity-icon ${transaction.amount > 0 ? 'topup' : 'usage'}`}>{transaction.amount > 0 ? <ArrowDownLeft size={17} /> : <ArrowUpRight size={17} />}</span>
               <div>
                 <strong>{transaction.description}</strong>
                 <span>
-                  {formatDate(transaction.date)} · {transaction.account}
+                  {formatDate(transaction.date)} · {transaction.account}{transaction.maskedNumber ? ` ${transaction.maskedNumber}` : ''} · {transaction.kind === 'deposit_topup' ? 'Top-up' : transaction.kind === 'deposit_usage' ? 'Debit VCC' : transaction.kind === 'reversal' ? 'Koreksi jurnal' : 'Penyesuaian saldo'}{transaction.reversed ? ' · Dibatalkan' : ''}
                 </span>
               </div>
               <strong className={transaction.amount > 0 ? 'positive' : ''}>
