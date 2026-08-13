@@ -14,8 +14,8 @@ export function Accounts() {
     [reconcile, setReconcile] = useState<Account | null>(null),
     [saving, setSaving] = useState(false),
     [error, setError] = useState('')
-  const visible = accounts.filter((account) => account.kind !== 'clearing'),
-    liquid = visible.filter((account) => ['bank', 'cash', 'ewallet'].includes(account.kind)),
+  const visible = accounts.filter((account) => ['bank', 'cash', 'ewallet'].includes(account.kind)),
+    liquid = visible,
     cash = liquid.reduce((sum, account) => sum + account.balance, 0),
     difference = visible.reduce((sum, account) => sum + Math.abs(account.reconciliationDifference || 0), 0)
   const canManage = !!user && ['owner', 'admin', 'finance'].includes(user.role)
@@ -221,7 +221,6 @@ export function Accounts() {
                 <option value="bank">Rekening bank</option>
                 <option value="cash">Kas tunai</option>
                 <option value="ewallet">E-wallet</option>
-                <option value="deposit">Deposit platform</option>
               </select>
             </label>
             <label>
@@ -319,7 +318,6 @@ export function Accounts() {
                 <option value="bank">Rekening bank</option>
                 <option value="cash">Kas tunai</option>
                 <option value="ewallet">E-wallet</option>
-                <option value="deposit">Deposit platform</option>
               </select>
             </label>
             <label>
