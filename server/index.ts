@@ -1236,6 +1236,7 @@ app.post('/api/deposits/:id/import-selow', importLimit, requireAuth, requireFina
     const input = z
         .object({
           sourceAccountId: z.string().uuid().optional(),
+          statementBalance: z.number().nonnegative().max(1e15),
           overrideReason: z.string().trim().max(500).optional(),
           rows: z.array(selowImportRow).min(1).max(2000),
         })
@@ -1327,10 +1328,6 @@ app.post('/api/deposits/:id/import-selow', importLimit, requireAuth, requireFina
           [deposit.rows[0].id],
         ),
         depositBalance = Number(deposit.rows[0].opening_balance) + Number(depositEntries.rows[0].amount)
-      if (depositBalance + topupTotal < debitTotal) {
-        await c.query('rollback')
-        return res.status(409).json({ error: 'Saldo VCC tidak cukup untuk seluruh debit baru pada file Selow.id' })
-      }
 
       await c.query(
         `insert into accounts(organization_id,name,kind,currency,color) values($1,'Pengeluaran','clearing',$2,'#d89b50') on conflict(organization_id,name) do nothing`,
@@ -1397,12 +1394,40 @@ app.post('/api/deposits/:id/import-selow', importLimit, requireAuth, requireFina
         )
         counts.imported += 1
       }
+      const projectedBalance = depositBalance + topupTotal - debitTotal,
+        balanceAdjustment = Math.round((input.statementBalance - projectedBalance) * 100) / 100
+      if (Math.abs(balanceAdjustment) >= 0.01) {
+        const adjustmentName = `Penyesuaian Deposit ${deposit.rows[0].currency}`
+        await c.query(
+          `insert into accounts(organization_id,name,kind,currency,color) values($1,$2,'clearing',$3,'#607d73') on conflict(organization_id,name) do nothing`,
+          [org, adjustmentName, deposit.rows[0].currency],
+        )
+        const adjustmentAccount = await c.query(
+            `select id from accounts where organization_id=$1 and name=$2 and kind='clearing' and active`,
+            [org, adjustmentName],
+          ),
+          adjustmentTransaction = await c.query(
+            `insert into transactions(organization_id,transaction_date,kind,status,description,category,reference,created_by,posted_by,posted_at)
+             values($1,$2::date,'adjustment','posted',$3,'Penyesuaian saldo deposit',$4,$5,$5,now()) returning id`,
+            [org, prepared.map((row) => row.transactionDate).sort().at(-1), `Penyesuaian saldo awal ${deposit.rows[0].name} dari export Selow.id`, `SELOW-ADJ-${prepared[0].fingerprint.slice(0, 8).toUpperCase()}`, req.auth!.userId],
+          )
+        await c.query(
+          `insert into transaction_entries(transaction_id,account_id,amount) values($1,$2,$3),($1,$4,$5)`,
+          [adjustmentTransaction.rows[0].id, deposit.rows[0].id, balanceAdjustment, adjustmentAccount.rows[0].id, -balanceAdjustment],
+        )
+      }
+      const statementDate = prepared.map((row) => row.transactionDate).sort().at(-1)
+      await c.query(
+        `insert into account_reconciliations(organization_id,account_id,statement_date,ledger_balance,statement_balance,note,reconciled_by)
+         values($1,$2,$3::date,$4,$4,$5,$6)`,
+        [org, deposit.rows[0].id, statementDate, input.statementBalance, `Saldo dicocokkan melalui import ${input.rows.length} baris Selow.id`, req.auth!.userId],
+      )
       await c.query(
         `insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'account',$3,'import_selow',$4)`,
-        [org, req.auth!.userId, deposit.rows[0].id, JSON.stringify({ ...counts, rows: input.rows.length })],
+        [org, req.auth!.userId, deposit.rows[0].id, JSON.stringify({ ...counts, rows: input.rows.length, statementBalance: input.statementBalance, projectedBalance, balanceAdjustment })],
       )
       await c.query('commit')
-      res.status(201).json(counts)
+      res.status(201).json({ ...counts, statementBalance: input.statementBalance, balanceAdjustment })
     } catch (e) {
       await c.query('rollback')
       if ((e as { code?: string }).code === '23505') return res.status(409).json({ error: 'File atau transaksi Selow.id ini sudah pernah diimpor' })

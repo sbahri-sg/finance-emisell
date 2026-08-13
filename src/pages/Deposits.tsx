@@ -11,7 +11,7 @@ const today = new Date().toISOString().slice(0, 10)
 const lastFour = (value: string) => value.replace(/\D/g, '').slice(-4)
 const maskedVcc = (value: string) => `•••• ${lastFour(value)}`
 type ImportBudgetCategory = BudgetCategory & { month: string }
-type SelowImportResult = { imported: number; matched: number; duplicates: number; topups: number; debits: number }
+type SelowImportResult = { imported: number; matched: number; duplicates: number; topups: number; debits: number; statementBalance: number; balanceAdjustment: number }
 export function Deposits() {
   const navigate = useNavigate(),
     { deposits, accounts, transactions, refresh, user } = useFinance(),
@@ -34,6 +34,7 @@ export function Deposits() {
     [importMappings, setImportMappings] = useState<Record<string, string>>({}),
     [importFileName, setImportFileName] = useState(''),
     [importResult, setImportResult] = useState<SelowImportResult | null>(null),
+    [importStatementBalance, setImportStatementBalance] = useState(''),
     [parsingImport, setParsingImport] = useState(false)
   const total = deposits.reduce((sum, deposit) => sum + deposit.balance, 0),
     usage = deposits.reduce((sum, deposit) => sum + deposit.monthlyUsage, 0),
@@ -44,7 +45,7 @@ export function Deposits() {
   const importGroups = Array.from(new Set(importRows.filter((row) => row.amount < 0).map((row) => `${row.transactionDate.slice(0, 7)}|${row.merchant}`))),
     importTopupTotal = importRows.filter((row) => row.amount > 0).reduce((sum, row) => sum + row.amount, 0),
     importDebitTotal = importRows.filter((row) => row.amount < 0).reduce((sum, row) => sum + Math.abs(row.amount), 0),
-    importReady = importRows.length > 0 && importGroups.every((group) => importMappings[group])
+    importReady = importRows.length > 0 && importStatementBalance !== '' && Number(importStatementBalance) >= 0 && importGroups.every((group) => importMappings[group])
   useEffect(() => {
     const month = new Date().toISOString().slice(0, 7)
     void fetch(`/api/budgets?month=${month}`, { credentials: 'include' })
@@ -213,6 +214,7 @@ export function Deposits() {
     setImportMappings({})
     setImportFileName('')
     setImportResult(null)
+    setImportStatementBalance('')
     setError('')
   }
   async function loadSelowFile(file?: File) {
@@ -234,6 +236,7 @@ export function Deposits() {
       setImportRows(rows)
       setImportBudgets(budgetResponses.flat())
       setImportMappings({})
+      setImportStatementBalance('')
       setImportFileName(file.name)
     } catch (e) {
       setImportRows([])
@@ -256,6 +259,7 @@ export function Deposits() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             sourceAccountId: importTopupTotal > 0 ? String(formData.get('sourceAccountId')) || undefined : undefined,
+            statementBalance: Number(importStatementBalance),
             overrideReason: String(formData.get('overrideReason')).trim() || undefined,
             rows: importRows.map((row) => ({
               transactionDate: row.transactionDate,
@@ -538,6 +542,7 @@ export function Deposits() {
                 <div><strong>{importResult.matched}</strong><span>cocok dengan catatan lama</span></div>
                 <div><strong>{importResult.duplicates}</strong><span>duplikat dilewati</span></div>
               </div>
+              <div className="selow-balance-result"><span>Saldo akhir dicocokkan ke <strong>{formatIDR(importResult.statementBalance)}</strong></span><small>Penyesuaian saldo awal: {formatIDR(importResult.balanceAdjustment)}</small></div>
               <div className="modal-actions"><Button onClick={closeSelowImport}>Selesai</Button></div>
             </div>
           ) : (
@@ -557,6 +562,10 @@ export function Deposits() {
                     <div><span>Top-up</span><strong className="positive">{formatIDR(importTopupTotal)}</strong></div>
                     <div><span>Debit</span><strong className="negative">{formatIDR(importDebitTotal)}</strong></div>
                   </div>
+                  <label className="span-2">Saldo akhir pada dashboard Selow.id
+                    <input name="statementBalance" type="number" min="0" step="0.01" value={importStatementBalance} onChange={(event)=>setImportStatementBalance(event.target.value)} placeholder="Contoh: 1924741.02" required/>
+                    <small>Sistem menghitung saldo pembuka periode secara otomatis agar saldo setelah impor sama dengan Selow.id.</small>
+                  </label>
                   {importTopupTotal > 0 && (sources.length ? (
                     <label className="span-2">Rekening sumber untuk top-up
                       <select name="sourceAccountId" defaultValue="" required>
