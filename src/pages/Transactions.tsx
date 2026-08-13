@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { ArrowDownLeft, ArrowUpRight, BanknoteArrowDown, Check, Download, Filter, Pencil, Plus, Search, Trash2 } from 'lucide-react'
+import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, BanknoteArrowDown, Check, Download, Filter, Pencil, Plus, Search, Trash2, WalletCards } from 'lucide-react'
 import { Badge, Button, Card, ConfirmActionModal, Modal, PageHeader } from '../components/ui'
 import { MoneyInput } from '../components/MoneyInput'
 import { useFinance } from '../lib/FinanceContext'
@@ -8,6 +8,7 @@ import { formatDate, formatIDR } from '../lib/format'
 import type { BudgetCategory, ExpenseCategoryLabel, Transaction } from '../types'
 
 type ExpenseCartRow = { budgetItemId: string; quantity: number; unitPrice: number }
+type TransactionFilter = 'all' | 'income' | 'expense' | 'internal' | 'vcc_usage'
 
 const currentMonth = new Date().toISOString().slice(0, 7)
 const today = new Date().toISOString().slice(0, 10)
@@ -16,7 +17,7 @@ export function Transactions() {
   const { transactions: items, accounts, refresh, user, settings } = useFinance()
   const [searchParams, setSearchParams] = useSearchParams()
   const [query, setQuery] = useState(() => searchParams.get('search') || '')
-  const [kind, setKind] = useState('all')
+  const [kind, setKind] = useState<TransactionFilter>('all')
   const [modal, setModal] = useState(false)
   const [expenseModal, setExpenseModal] = useState(false)
   const [editing, setEditing] = useState<Transaction | null>(null)
@@ -85,7 +86,15 @@ export function Transactions() {
         if (categories.length) setExpenseCategory((current) => (categories.some((item) => item.name === current) ? current : categories[0].name))
       })
   }, [])
-  const filtered = useMemo(() => items.filter((item) => `${item.description} ${item.reference} ${item.category} ${item.counterparty || ''}`.toLowerCase().includes(query.toLowerCase()) && (kind === 'all' || item.kind === kind)), [items, kind, query])
+  const filtered = useMemo(() => items.filter((item) => {
+    const matchesSearch = `${item.description} ${item.reference} ${item.category} ${item.counterparty || ''} ${item.sourceAccount || ''} ${item.destinationAccount || ''}`.toLowerCase().includes(query.toLowerCase())
+    const matchesKind = kind === 'all'
+      || (kind === 'income' && item.kind === 'income')
+      || (kind === 'expense' && item.kind === 'expense')
+      || (kind === 'internal' && ['transfer', 'deposit_topup'].includes(item.kind))
+      || (kind === 'vcc_usage' && item.kind === 'deposit_usage')
+    return matchesSearch && matchesKind
+  }), [items, kind, query])
   const selectedExpenseBudget = useMemo(
     () => budgetCategories.find((category) => category.id === expenseBudgetCategoryId),
     [budgetCategories, expenseBudgetCategoryId],
@@ -95,10 +104,37 @@ export function Transactions() {
     if (selectedExpenseBudget?.budgetModel === 'multi_item') setExpenseAmount(expenseCartTotal)
   }, [expenseCartTotal, selectedExpenseBudget?.budgetModel])
   const monthItems = items.filter((item) => item.date.startsWith(currentMonth))
-  const incomeTotal = monthItems.filter((item) => item.kind === 'income' && item.status === 'posted').reduce((sum, item) => sum + Math.max(0, item.amount), 0)
-  const expenseItems = monthItems.filter((item) => ['expense', 'deposit_usage'].includes(item.kind) && item.status === 'posted')
-  const expenseTotal = Math.abs(expenseItems.reduce((sum, item) => sum + Math.min(0, item.amount), 0))
-  const pendingTotal = monthItems.filter((item) => item.status === 'pending' || item.status === 'draft').reduce((sum, item) => sum + Math.abs(item.amount), 0)
+  const incomeItems = monthItems.filter((item) => item.kind === 'income' && item.status === 'posted')
+  const expenseItems = monthItems.filter((item) => item.kind === 'expense' && item.status === 'posted')
+  const internalItems = monthItems.filter((item) => ['transfer', 'deposit_topup'].includes(item.kind) && item.status === 'posted')
+  const vccUsageItems = monthItems.filter((item) => item.kind === 'deposit_usage' && item.status === 'posted')
+  const incomeTotal = incomeItems.reduce((sum, item) => sum + Math.max(0, item.amount), 0)
+  const expenseTotal = expenseItems.reduce((sum, item) => sum + Math.abs(item.amount), 0)
+  const internalTotal = internalItems.reduce((sum, item) => sum + Math.abs(item.amount), 0)
+  const vccUsageTotal = vccUsageItems.reduce((sum, item) => sum + Math.abs(item.amount), 0)
+
+  function transactionLabel(transaction: Transaction) {
+    if (transaction.kind === 'income') return 'Dana masuk'
+    if (transaction.kind === 'expense') return 'Pengeluaran'
+    if (transaction.kind === 'deposit_topup') return 'Top-up VCC'
+    if (transaction.kind === 'deposit_usage') return 'Pemakaian VCC'
+    if (transaction.kind === 'transfer') return 'Transfer internal'
+    if (transaction.kind === 'adjustment') return 'Penyesuaian saldo'
+    return 'Transaksi lainnya'
+  }
+
+  function transactionGroup(transaction: Transaction) {
+    if (['transfer', 'deposit_topup'].includes(transaction.kind)) return 'internal'
+    if (transaction.kind === 'deposit_usage') return 'vcc'
+    return transaction.kind === 'income' ? 'income' : 'expense'
+  }
+
+  function accountFlow(transaction: Transaction) {
+    if (transaction.sourceAccount && transaction.destinationAccount) return `${transaction.sourceAccount} → ${transaction.destinationAccount}`
+    if (transaction.kind === 'deposit_topup' && transaction.destinationAccount) return `Riwayat Selow.id → ${transaction.destinationAccount}`
+    if (transaction.kind === 'deposit_usage' && transaction.sourceAccount) return transaction.sourceAccount
+    return transaction.account || '—'
+  }
 
   async function createIncome(formData: FormData) {
     setSaving(true)
@@ -287,21 +323,26 @@ export function Transactions() {
           <button onClick={() => setError('')}>Tutup</button>
         </div>
       )}
-      <div className="mini-stats">
+      <div className="mini-stats four transaction-summary">
         <Card>
-          <span>Dana masuk bulan ini</span>
+          <span>Dana masuk eksternal</span>
           <strong className="positive">{formatIDR(incomeTotal)}</strong>
-          <small>{monthItems.filter((item) => item.kind === 'income' && item.status === 'posted').length} transaksi diposting</small>
+          <small>{incomeItems.length} transaksi · uang baru perusahaan</small>
         </Card>
         <Card>
-          <span>Dana keluar bulan ini</span>
+          <span>Pengeluaran langsung</span>
           <strong>{formatIDR(expenseTotal)}</strong>
-          <small>{expenseItems.length} transaksi diposting</small>
+          <small>{expenseItems.length} transaksi dari bank atau kas</small>
         </Card>
         <Card>
-          <span>Menunggu verifikasi</span>
-          <strong>{formatIDR(pendingTotal)}</strong>
-          <small className="warning-text">{monthItems.filter((item) => item.status !== 'posted').length} transaksi</small>
+          <span>Transfer internal & top-up</span>
+          <strong className="neutral-amount">{formatIDR(internalTotal)}</strong>
+          <small>{internalItems.length} transaksi · bukan biaya</small>
+        </Card>
+        <Card>
+          <span>Pemakaian VCC</span>
+          <strong className="negative">{formatIDR(vccUsageTotal)}</strong>
+          <small>{vccUsageItems.length} transaksi · menjadi biaya</small>
         </Card>
       </div>
       <Card className="data-card">
@@ -312,12 +353,12 @@ export function Transactions() {
           </label>
           <div className="filter-group">
             <Filter size={16} />
-            <select value={kind} onChange={(event) => setKind(event.target.value)}>
+            <select value={kind} onChange={(event) => setKind(event.target.value as TransactionFilter)}>
               <option value="all">Semua jenis</option>
               <option value="income">Dana masuk</option>
-              <option value="expense">Pengeluaran</option>
-              <option value="transfer">Transfer</option>
-              <option value="deposit">Deposit</option>
+              <option value="expense">Pengeluaran langsung</option>
+              <option value="internal">Transfer internal & top-up VCC</option>
+              <option value="vcc_usage">Pemakaian VCC</option>
             </select>
           </div>
         </div>
@@ -336,10 +377,12 @@ export function Transactions() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((trx) => (
-                <tr key={trx.id}>
+              {filtered.map((trx) => {
+                const group = transactionGroup(trx)
+                const isInternal = group === 'internal'
+                return <tr key={trx.id}>
                   <td>
-                    <div className={`trx-icon ${trx.amount > 0 ? 'in' : 'out'}`}>{trx.amount > 0 ? <ArrowDownLeft size={16} /> : <ArrowUpRight size={16} />}</div>
+                    <div className={`trx-icon ${group}`}>{group === 'income' ? <ArrowDownLeft size={16} /> : group === 'internal' ? <ArrowLeftRight size={16} /> : group === 'vcc' ? <WalletCards size={16} /> : <ArrowUpRight size={16} />}</div>
                     <span>
                       <strong>{trx.description}</strong>
                       <small>
@@ -348,8 +391,8 @@ export function Transactions() {
                     </span>
                   </td>
                   <td>{formatDate(trx.date)}</td>
-                  <td>{trx.category}</td>
-                  <td>{trx.account || '—'}</td>
+                  <td><span className="transaction-category"><strong>{transactionLabel(trx)}</strong><small>{trx.category}</small></span></td>
+                  <td><span className="transaction-account-flow">{accountFlow(trx)}</span></td>
                   <td>
                     <Badge tone={trx.status === 'posted' ? 'success' : trx.status === 'pending' ? 'warning' : 'neutral'}>{trx.status === 'posted' ? 'Selesai' : trx.status === 'pending' ? 'Pending' : 'Draft'}</Badge>
                   </td>
@@ -362,9 +405,9 @@ export function Transactions() {
                       '—'
                     )}
                   </td>
-                  <td className={`align-right amount ${trx.amount > 0 ? 'positive' : ''}`}>
-                    {trx.amount > 0 ? '+' : ''}
-                    {formatIDR(trx.amount)}
+                  <td className={`align-right amount ${group === 'income' ? 'positive' : group === 'internal' ? 'neutral-amount' : ''}`}>
+                    {group === 'income' ? '+' : ''}
+                    {formatIDR(isInternal ? Math.abs(trx.amount) : trx.amount)}
                   </td>
                   <td className="align-right">
                     <div className="row-actions">
@@ -389,7 +432,7 @@ export function Transactions() {
                     </div>
                   </td>
                 </tr>
-              ))}
+              })}
             </tbody>
           </table>
         </div>

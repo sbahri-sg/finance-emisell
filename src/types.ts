@@ -28,6 +28,8 @@ export interface Transaction {
   description: string
   category: string
   account: string
+  sourceAccount?: string
+  destinationAccount?: string
   accountId?: string
   budgetCategoryId?: string
   budgetItemName?: string
