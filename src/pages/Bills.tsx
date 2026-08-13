@@ -6,6 +6,7 @@ import { Badge, Button, Card, Modal, PageHeader } from '../components/ui'
 import type { Bill, BudgetCategory } from '../types'
 
 const today = new Date().toISOString().slice(0, 10)
+const paymentMethodLabel = (method?: Bill['paymentMethod']) => method === 'vcc' ? 'VCC' : method === 'ewallet' ? 'E-Wallet' : method === 'cash' ? 'Tunai' : 'Transfer bank'
 export function Bills() {
   const { bills, accounts, refresh, user } = useFinance(),
     [tab, setTab] = useState<'upcoming' | 'paid' | 'all'>('upcoming'),
@@ -15,12 +16,15 @@ export function Bills() {
     [billQuantity, setBillQuantity] = useState(1),
     [billCurrency, setBillCurrency] = useState<'IDR' | 'USD'>('IDR'),
     [payment, setPayment] = useState<Bill | null>(null),
+    [paymentSource, setPaymentSource] = useState<'bank' | 'vcc'>('bank'),
+    [paymentAccountId, setPaymentAccountId] = useState(''),
     [deleteTarget, setDeleteTarget] = useState<Bill | null>(null),
     [saving, setSaving] = useState(false),
     [error, setError] = useState(''),
     [budgetCategories, setBudgetCategories] = useState<BudgetCategory[]>([])
   const canManage = !!user && ['owner', 'admin', 'finance'].includes(user.role),
     paymentAccounts = accounts.filter((account) => ['bank', 'cash', 'ewallet'].includes(account.kind)),
+    vccAccounts = accounts.filter((account) => account.kind === 'deposit'),
     open = bills.filter((bill) => bill.status !== 'paid'),
     attention = open.filter((bill) => bill.status === 'due' || bill.status === 'overdue'),
     filtered = useMemo(() => bills.filter((bill) => tab === 'all' || (tab === 'paid' ? bill.status === 'paid' : bill.status !== 'paid')), [bills, tab])
@@ -211,7 +215,7 @@ export function Bills() {
                     <span className={`vendor-avatar vendor-${index % 4}`}>{initials(bill.vendor)}</span>
                     <span>
                       <strong>{bill.vendor}</strong>
-                      <small>{bill.description}</small>
+                      <small>{bill.description} · {paymentMethodLabel(bill.paymentMethod)}</small>
                     </span>
                   </td>
                   <td>
@@ -283,6 +287,8 @@ export function Bills() {
                             className="approve"
                             onClick={() => {
                               setError('')
+                              setPaymentSource(bill.paymentMethod === 'vcc' ? 'vcc' : 'bank')
+                              setPaymentAccountId('')
                               setPayment(bill)
                             }}
                           >
@@ -347,6 +353,7 @@ export function Bills() {
                 <option value="transfer">Transfer</option>
                 <option value="ewallet">E-Wallet</option>
                 <option value="cash">Cash</option>
+                <option value="vcc">VCC / saldo deposit</option>
               </select>
             </label>
             <label>
@@ -417,14 +424,21 @@ export function Bills() {
               <input name="amount" type="number" min="1" step="1" defaultValue={payment.amount} required />
             </label>
             <label className="span-2">
-              Rekening
-              <select name="accountId" defaultValue="" required>
+              Sumber pembayaran
+              <select value={paymentSource} onChange={(event) => { setPaymentSource(event.target.value as 'bank' | 'vcc'); setPaymentAccountId('') }}>
+                <option value="bank">Rekening, kas, atau e-wallet</option>
+                <option value="vcc">VCC / saldo deposit</option>
+              </select>
+            </label>
+            <label className="span-2">
+              {paymentSource === 'vcc' ? 'Pilih VCC' : 'Pilih rekening'}
+              <select name="accountId" value={paymentAccountId} onChange={(event) => setPaymentAccountId(event.target.value)} required>
                 <option value="" disabled>
-                  Pilih rekening
+                  {paymentSource === 'vcc' ? 'Pilih kartu VCC' : 'Pilih rekening perusahaan'}
                 </option>
-                {paymentAccounts.map((account) => (
+                {(paymentSource === 'vcc' ? vccAccounts : paymentAccounts).filter((account) => account.currency === payment.currency).map((account) => (
                   <option value={account.id} key={account.id}>
-                    {account.name} — {formatIDR(account.balance)}
+                    {account.name}{account.maskedNumber ? ` ${account.maskedNumber}` : ''} — {formatCurrency(account.balance, account.currency)}
                   </option>
                 ))}
               </select>
@@ -441,14 +455,16 @@ export function Bills() {
               </select>
             </label>
             <label>
-              Referensi bank
+              {paymentSource === 'vcc' ? 'Referensi pembayaran' : 'Referensi bank'}
               <input name="reference" maxLength={100} />
             </label>
             <label>
               Alasan override RAB <span className="optional-label">Jika diperlukan</span>
               <input name="overrideReason" maxLength={500} />
             </label>
-            <div className="form-note span-2">Tagihan berulang otomatis menghasilkan jadwal periode berikutnya setelah pembayaran berhasil.</div>
+            <div className="form-note span-2">
+              {paymentSource === 'vcc' ? 'Saldo VCC akan berkurang sesuai nominal pembayaran.' : 'Saldo rekening perusahaan akan berkurang sesuai nominal pembayaran.'} Tagihan berulang otomatis menghasilkan jadwal periode berikutnya.
+            </div>
             <div className="modal-actions span-2">
               <Button variant="secondary" onClick={() => setPayment(null)}>
                 Batal

@@ -40,7 +40,7 @@ export interface Transaction {
   counterparty?: string
   invoiceNumber?: string
   incomeSource?: string
-  paymentMethod?: 'transfer' | 'ewallet' | 'cash'
+  paymentMethod?: 'transfer' | 'ewallet' | 'cash' | 'vcc'
   proofUrl?: string
   editable?: boolean
 }
@@ -60,7 +60,7 @@ export interface Bill {
   paidTransactionId?: string
   unitPrice?: number
   quantity?: number
-  paymentMethod?: 'transfer' | 'ewallet' | 'cash'
+  paymentMethod?: 'transfer' | 'ewallet' | 'cash' | 'vcc'
 }
 
 export interface DepositAccount {

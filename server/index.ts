@@ -918,6 +918,7 @@ const incomeSources = {
   other: { category: 'Pendapatan lainnya', counterpart: 'Pendapatan' },
 } as const
 const paymentMethod = z.enum(['transfer', 'ewallet', 'cash'])
+const billPaymentMethod = z.enum(['transfer', 'ewallet', 'cash', 'vcc'])
 const proofUrl = z.url().max(500).optional()
 const incomeInput = z.object({
   transactionDate: z.iso.date(),
@@ -1441,7 +1442,7 @@ const billInput = z.object({
     .min(1)
     .max(5)
     .default([14, 7, 1]),
-  paymentMethod,
+  paymentMethod: billPaymentMethod,
 })
 app.post('/api/bills', requireAuth, requireFinance, async (req: AuthedRequest, res, next) => {
   try {
@@ -1506,10 +1507,10 @@ app.post('/api/bills/:id/pay', requireAuth, requireFinance, async (req: AuthedRe
         await c.query('rollback')
         return res.status(409).json({ error: 'Tagihan sudah dibayar' })
       }
-      const source = await c.query(`select id,currency from accounts where id=$1 and organization_id=$2 and kind in('bank','cash','ewallet') and active for update`, [input.accountId, org])
+      const source = await c.query(`select id,name,kind,currency,opening_balance from accounts where id=$1 and organization_id=$2 and kind in('bank','cash','ewallet','deposit') and active for update`, [input.accountId, org])
       if (!source.rowCount) {
         await c.query('rollback')
-        return res.status(400).json({ error: 'Rekening pembayaran tidak valid' })
+        return res.status(400).json({ error: 'Sumber pembayaran tidak valid' })
       }
       if (source.rows[0].currency !== bill.rows[0].currency) {
         await c.query('rollback')
@@ -1522,13 +1523,22 @@ app.post('/api/bills/:id/pay', requireAuth, requireFinance, async (req: AuthedRe
           return res.status(409).json({ error: 'Referensi pembayaran sudah pernah digunakan' })
         }
       }
+      if (source.rows[0].kind === 'deposit') {
+        const balance = await c.query(`select a.opening_balance+coalesce(sum(case when t.status='posted' then e.amount else 0 end),0)::numeric balance from accounts a left join transaction_entries e on e.account_id=a.id left join transactions t on t.id=e.transaction_id where a.id=$1 group by a.id,a.opening_balance`, [source.rows[0].id])
+        if (Number(balance.rows[0].balance) < input.amount) {
+          await c.query('rollback')
+          return res.status(409).json({ error: `Saldo VCC ${source.rows[0].name} tidak mencukupi` })
+        }
+      }
       let budgetCheck = null
       if (input.budgetCategoryId) budgetCheck = await assertBudgetAvailable(c, org, input.budgetCategoryId, input.amount, undefined, req.auth!.role, input.overrideReason)
       await c.query(`insert into accounts(organization_id,name,kind,currency,color) values($1,'Pengeluaran','clearing',$2,'#d89b50') on conflict(organization_id,name) do nothing`, [org, source.rows[0].currency])
       const counterpart = await c.query(`select id from accounts where organization_id=$1 and name='Pengeluaran' and kind='clearing' and active`, [org])
       const budgetExpenseCategory = input.budgetCategoryId ? await c.query(`select ec.id,ec.name from budget_categories bc left join expense_categories ec on ec.id=bc.expense_category_id where bc.id=$1`, [input.budgetCategoryId]) : null
       const category = budgetExpenseCategory?.rows[0]?.name ? budgetExpenseCategory.rows[0] : await getFallbackExpenseCategory(c, org, 'Utilities & Langganan')
-      const transaction = await c.query(`insert into transactions(organization_id,transaction_date,kind,status,description,category,expense_category_id,reference,counterparty,budget_category_id,created_by,posted_by,posted_at) values($1,$2::date,'expense','posted',$3,$4,$5,$6,$7,$8,$9,$9,now()) returning id`, [org, input.transactionDate, `${bill.rows[0].vendor} — ${bill.rows[0].description}`.slice(0, 240), category.name, category.id, input.reference || null, bill.rows[0].vendor, input.budgetCategoryId || null, req.auth!.userId])
+      const transactionKind = source.rows[0].kind === 'deposit' ? 'deposit_usage' : 'expense'
+      const actualPaymentMethod = source.rows[0].kind === 'deposit' ? 'vcc' : source.rows[0].kind === 'ewallet' ? 'ewallet' : source.rows[0].kind === 'cash' ? 'cash' : 'transfer'
+      const transaction = await c.query(`insert into transactions(organization_id,transaction_date,kind,status,description,category,expense_category_id,reference,counterparty,budget_category_id,payment_method,created_by,posted_by,posted_at) values($1,$2::date,$3,'posted',$4,$5,$6,$7,$8,$9,$10,$11,$11,now()) returning id`, [org, input.transactionDate, transactionKind, `${bill.rows[0].vendor} — ${bill.rows[0].description}`.slice(0, 240), category.name, category.id, input.reference || null, bill.rows[0].vendor, input.budgetCategoryId || null, actualPaymentMethod, req.auth!.userId])
       await c.query(`insert into transaction_entries(transaction_id,account_id,amount) values($1,$2,$3),($1,$4,$5)`, [transaction.rows[0].id, source.rows[0].id, -input.amount, counterpart.rows[0].id, input.amount])
       await c.query(`update bills set status='paid',paid_transaction_id=$1,paid_at=now(),paid_by=$2 where id=$3`, [transaction.rows[0].id, req.auth!.userId, bill.rows[0].id])
       let nextBillId = null
@@ -1544,6 +1554,8 @@ app.post('/api/bills/:id/pay', requireAuth, requireFinance, async (req: AuthedRe
           transactionId: transaction.rows[0].id,
           amount: input.amount,
           accountId: input.accountId,
+          accountKind: source.rows[0].kind,
+          paymentMethod: actualPaymentMethod,
           nextBillId,
           budgetCheck,
           overrideReason: input.overrideReason || null,
