@@ -351,7 +351,11 @@ app.get('/api/settings', requireAuth, async (req: AuthedRequest, res, next) => {
       pool.query(`select name,coalesce(legal_name,'') "legalName",coalesce(tax_id,'') "taxId",coalesce(finance_email,'') "financeEmail",coalesce(address,'') address,timezone,base_currency "baseCurrency" from organizations where id=$1`, [org]),
       pool.query(`select coalesce(default_account_id::text,'') "defaultAccountId",transaction_prefix "transactionPrefix",purchase_prefix "purchasePrefix",minimum_cash_balance::numeric "minimumCashBalance",bill_reminder_days "billReminderDays",notify_bills "notifyBills",notify_low_deposit "notifyLowDeposit",notify_purchase_approval "notifyPurchaseApproval",notify_reconciliation "notifyReconciliation",owner_approval_threshold::numeric "ownerApprovalThreshold",session_hours "sessionHours",updated_at "updatedAt" from organization_settings where organization_id=$1`, [org]),
       pool.query(`select id,name,kind from accounts where organization_id=$1 and active and kind in('bank','cash','ewallet') order by name`, [org]),
-      pool.query(`select ec.id,ec.name,ec.color,ec.active,(select count(*)::int from transactions t where t.expense_category_id=ec.id) "transactionCount",(select count(*)::int from budget_categories bc where bc.expense_category_id=ec.id) "budgetCount" from expense_categories ec where ec.organization_id=$1 order by ec.active desc,ec.name`, [org]),
+      pool.query(`select ec.id,ec.name,ec.color,ec.active,
+        (select count(*)::int from transactions t where t.expense_category_id=ec.id and t.status<>'reversed' and t.kind<>'reversal' and not exists(select 1 from transactions r where r.reversal_of=t.id and r.status='posted')) "transactionCount",
+        (select count(*)::int from transactions t where t.expense_category_id=ec.id and (t.status='reversed' or t.kind='reversal' or exists(select 1 from transactions r where r.reversal_of=t.id and r.status='posted'))) "historyCount",
+        (select count(*)::int from budget_categories bc where bc.expense_category_id=ec.id) "budgetCount"
+        from expense_categories ec where ec.organization_id=$1 order by ec.active desc,ec.name`, [org]),
     ])
     res.json({
       profile: profile.rows[0],
@@ -417,9 +421,10 @@ app.delete('/api/expense-categories/:id', settingsLimit, requireAuth, requireUse
       return res.status(404).json({ error: 'Kategori tidak ditemukan' })
     }
     const usage = await c.query(`select
-      (select count(*)::int from transactions where expense_category_id=$1) "transactionCount",
+      (select count(*)::int from transactions t where t.expense_category_id=$1 and t.status<>'reversed' and t.kind<>'reversal' and not exists(select 1 from transactions r where r.reversal_of=t.id and r.status='posted')) "transactionCount",
+      (select count(*)::int from transactions t where t.expense_category_id=$1 and (t.status='reversed' or t.kind='reversal' or exists(select 1 from transactions r where r.reversal_of=t.id and r.status='posted'))) "historyCount",
       (select count(*)::int from budget_categories where expense_category_id=$1) "budgetCount"`, [req.params.id])
-    const isUsed = Boolean(usage.rows[0].transactionCount || usage.rows[0].budgetCount)
+    const isUsed = Boolean(usage.rows[0].transactionCount || usage.rows[0].historyCount || usage.rows[0].budgetCount)
     let replacement: { id: string; name: string } | null = null
     if (isUsed) {
       if (!input.replacementCategoryId || input.replacementCategoryId === req.params.id) {

@@ -157,6 +157,7 @@ export interface ExpenseCategoryLabel {
   color: string
   active: boolean
   transactionCount?: number
+  historyCount?: number
   budgetCount?: number
 }
 
