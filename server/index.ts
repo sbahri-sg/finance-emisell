@@ -1419,7 +1419,7 @@ app.post('/api/deposits/:id/import-selow', importLimit, requireAuth, requireFina
       const statementDate = prepared.map((row) => row.transactionDate).sort().at(-1)
       await c.query(
         `insert into account_reconciliations(organization_id,account_id,statement_date,ledger_balance,statement_balance,note,reconciled_by)
-         values($1,$2,$3::date,$4,$4,$5,$6)`,
+         values($1,$2,greatest($3::date,current_date),$4,$4,$5,$6)`,
         [org, deposit.rows[0].id, statementDate, input.statementBalance, `Saldo dicocokkan melalui import ${input.rows.length} baris Selow.id`, req.auth!.userId],
       )
       await c.query(
@@ -2006,7 +2006,7 @@ app.get('/api/budgets', requireAuth, async (req: AuthedRequest, res, next) => {
     if (!period.rowCount) return res.json({ budget: null, categories: [] })
     const categories = await pool.query(
       `select bc.id,bc.name,bc.category_type "categoryType",bc.budget_model "budgetModel",bc.planned_amount::numeric "plannedAmount",bc.color,coalesce(ec.name,bc.expense_category,'Lain-Lain') "expenseCategory",coalesce(ec.id::text,'') "expenseCategoryId",coalesce(ec.active,false) "expenseCategoryActive",bc.details,coalesce((select jsonb_agg(item || jsonb_build_object('purchasedQuantity',coalesce(usage.quantity,0),'remainingQuantity',greatest(0,(item->>'quantity')::int-coalesce(usage.quantity,0))) order by ordinal) from jsonb_array_elements(bc.line_items) with ordinality source(item,ordinal) left join lateral(select sum(tbi.quantity)::int quantity from transaction_budget_items tbi join transactions tx on tx.id=tbi.transaction_id where tbi.budget_category_id=bc.id and tbi.budget_item_id=(item->>'id')::uuid and tx.status='posted' and tx.kind='expense' and not exists(select 1 from transactions r where r.reversal_of=tx.id and r.status='posted')) usage on true),'[]'::jsonb) "lineItems",
-    coalesce((select sum(-te.amount) from transactions t join transaction_entries te on te.transaction_id=t.id join accounts a on a.id=te.account_id where t.organization_id=$1 and t.status='posted' and t.budget_category_id=bc.id and a.kind in('bank','cash','ewallet')),0)::numeric actual,
+    coalesce((select sum(-te.amount) from transactions t join transaction_entries te on te.transaction_id=t.id join accounts a on a.id=te.account_id where t.organization_id=$1 and t.status='posted' and t.budget_category_id=bc.id and a.kind in('bank','cash','ewallet','deposit')),0)::numeric actual,
     coalesce((select sum(pr.estimated_total) from purchase_requests pr where pr.organization_id=$1 and pr.budget_category_id=bc.id and pr.status='submitted'),0)::numeric "pendingAmount",
     coalesce((select sum(pr.estimated_total) from purchase_requests pr where pr.organization_id=$1 and pr.budget_category_id=bc.id and pr.status='approved'),0)::numeric "committedAmount",
     (not exists(
