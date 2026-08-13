@@ -7,6 +7,8 @@ import { Badge, Button, Card, ConfirmActionModal, Modal, PageHeader } from '../c
 import type { Account, BudgetCategory, DepositAccount } from '../types'
 
 const today = new Date().toISOString().slice(0, 10)
+const lastFour = (value: string) => value.replace(/\D/g, '').slice(-4)
+const maskedVcc = (value: string) => `•••• ${lastFour(value)}`
 export function Deposits() {
   const navigate = useNavigate(),
     { deposits, accounts, transactions, refresh, user } = useFinance(),
@@ -15,6 +17,7 @@ export function Deposits() {
       deposit: DepositAccount
     } | null>(null),
     [createDeposit, setCreateDeposit] = useState(false),
+    [newVccNumber, setNewVccNumber] = useState(''),
     [editingDeposit, setEditingDeposit] = useState<Account | null>(null),
     [reconcileDeposit, setReconcileDeposit] = useState<DepositAccount | null>(null),
     [statementBalance, setStatementBalance] = useState(0),
@@ -44,14 +47,6 @@ export function Deposits() {
         ),
       )
   }, [])
-  function startTopup() {
-    setError('')
-    if (!deposits.length) {
-      setCreateDeposit(true)
-      return
-    }
-    setAction({ kind: 'topup', deposit: deposits[0] })
-  }
   async function createDepositAccount(formData: FormData) {
     setSaving(true)
     setError('')
@@ -60,6 +55,7 @@ export function Deposits() {
         institution = String(formData.get('institution')).trim(),
         currency = String(formData.get('currency')) as 'IDR' | 'USD',
         lowBalanceThreshold = Number(formData.get('lowBalanceThreshold'))
+      if (lastFour(newVccNumber).length !== 4) throw new Error('Nomor VCC minimal harus memiliki 4 digit')
       const response = await fetch('/api/accounts', {
           method: 'POST',
           credentials: 'include',
@@ -68,7 +64,7 @@ export function Deposits() {
             name: platform,
             institution,
             kind: 'deposit',
-            maskedNumber: String(formData.get('maskedNumber')).trim() || undefined,
+            maskedNumber: maskedVcc(newVccNumber),
             currency,
             openingBalance: 0,
             lowBalanceThreshold,
@@ -82,12 +78,14 @@ export function Deposits() {
       if (!response.ok || !result.id) throw new Error(result.error || 'Akun deposit belum dapat dibuat')
       await refresh()
       setCreateDeposit(false)
+      setNewVccNumber('')
       setAction({
         kind: 'topup',
         deposit: {
           id: result.id,
           platform,
           accountName: institution,
+          maskedNumber: maskedVcc(newVccNumber),
           balance: 0,
           monthlyUsage: 0,
           dailyAverage: 0,
@@ -145,7 +143,9 @@ export function Deposits() {
     setSaving(true)
     setError('')
     try {
-      const response = await fetch(`/api/accounts/${editingDeposit.id}`, { method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: String(formData.get('name')).trim(), institution: String(formData.get('institution')).trim() || undefined, kind: 'deposit', maskedNumber: String(formData.get('maskedNumber')).trim() || undefined, currency: editingDeposit.currency, lowBalanceThreshold: Number(formData.get('lowBalanceThreshold')) || undefined, color: String(formData.get('color')) }) })
+      const editLastFour = lastFour(String(formData.get('maskedNumber')))
+      if (editLastFour.length !== 4) throw new Error('Empat digit terakhir VCC wajib diisi')
+      const response = await fetch(`/api/accounts/${editingDeposit.id}`, { method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: String(formData.get('name')).trim(), institution: String(formData.get('institution')).trim() || undefined, kind: 'deposit', maskedNumber: maskedVcc(editLastFour), currency: editingDeposit.currency, lowBalanceThreshold: Number(formData.get('lowBalanceThreshold')) || undefined, color: String(formData.get('color')) }) })
       const result = (await response.json().catch(() => ({}))) as { error?: string }
       if (!response.ok) throw new Error(result.error || 'Deposit belum dapat diperbarui')
       await refresh()
@@ -195,14 +195,12 @@ export function Deposits() {
   return (
     <>
       <PageHeader
-        eyebrow="DANA TERSIMPAN"
-        title="Deposit platform"
-        description="Top-up adalah perpindahan aset; pemakaian menjadi pengeluaran saat dicatat."
+        eyebrow="KUMPULAN KARTU VIRTUAL"
+        title="VCC & saldo deposit"
+        description="Kelola setiap VCC Selow.id, saldo, top-up, debit, RAB, dan rekonsiliasinya."
         action={
           canManage ? (
-            <Button onClick={startTopup}>
-              <Plus size={16} /> Catat top-up
-            </Button>
+            <Button onClick={() => { setError(''); setNewVccNumber(''); setCreateDeposit(true) }}><Plus size={16} /> Tambah VCC</Button>
           ) : undefined
         }
       />
@@ -214,7 +212,7 @@ export function Deposits() {
       )}
       <div className="deposit-hero">
         <div>
-          <span>Total saldo deposit</span>
+          <span>Total saldo seluruh VCC</span>
           <strong>{formatIDR(total)}</strong>
           <small>Dicatat sebagai aset, bukan pengeluaran</small>
         </div>
@@ -250,7 +248,7 @@ export function Deposits() {
                 </span>
                 <div>
                   <strong>{deposit.platform}</strong>
-                  <span>{deposit.accountName || 'Akun platform'}</span>
+                  <span>{deposit.accountName || 'Selow.id'}{deposit.maskedNumber ? ` · ${deposit.maskedNumber}` : ''}</span>
                 </div>
                 {low ? (
                   <Badge tone="danger">
@@ -343,8 +341,8 @@ export function Deposits() {
         <Card className="data-card">
           <div className="dashboard-empty deposit-onboarding">
             <AlertTriangle size={25} />
-            <strong>Belum ada akun deposit</strong>
-            <span>Buat akun platform terlebih dahulu, lalu catat top-up dari rekening perusahaan.</span>
+            <strong>Belum ada VCC</strong>
+            <span>Tambahkan kartu virtual Selow.id, lalu catat top-up dari rekening perusahaan.</span>
             {canManage && (
               <Button
                 onClick={() => {
@@ -352,7 +350,7 @@ export function Deposits() {
                   setCreateDeposit(true)
                 }}
               >
-                <Plus size={15} /> Siapkan akun deposit
+                <Plus size={15} /> Tambah VCC pertama
               </Button>
             )}
           </div>
@@ -392,8 +390,8 @@ export function Deposits() {
       </Card>
       {editingDeposit && (
         <Modal
-          title={`Edit ${editingDeposit.name}`}
-          description="Ubah informasi akun deposit tanpa mengubah saldo."
+          title={`Edit VCC ${editingDeposit.name}`}
+          description="Ubah label kartu dan empat digit terakhir tanpa mengubah saldo."
           onClose={() => {
             setEditingDeposit(null)
             setError('')
@@ -402,16 +400,17 @@ export function Deposits() {
           <form className="form-grid" action={updateDeposit}>
             {error && <div className="auth-error span-2">{error}</div>}
             <label>
-              Nama platform
+              Nama/fungsi VCC
               <input name="name" required minLength={2} maxLength={100} defaultValue={editingDeposit.name} />
             </label>
             <label>
-              Nama akun bisnis
+              Provider
               <input name="institution" maxLength={100} defaultValue={editingDeposit.institution} />
             </label>
             <label>
-              ID akun
-              <input name="maskedNumber" maxLength={20} defaultValue={editingDeposit.maskedNumber} />
+              4 digit terakhir VCC
+              <input name="maskedNumber" inputMode="numeric" pattern="[0-9]{4}" minLength={4} maxLength={4} defaultValue={lastFour(editingDeposit.maskedNumber)} placeholder="1234" required />
+              <small>Nomor lengkap, CVV, dan masa berlaku tidak disimpan.</small>
             </label>
             <label>
               Batas saldo minimum
@@ -437,26 +436,28 @@ export function Deposits() {
       )}
       {createDeposit && (
         <Modal
-          title="Siapkan akun deposit"
-          description="Tambahkan platform prabayar sebelum mencatat top-up pertama."
+          title="Tambah VCC Selow.id"
+          description="Nomor lengkap hanya diproses di perangkat ini untuk mengambil 4 digit terakhir."
           onClose={() => {
             setCreateDeposit(false)
+            setNewVccNumber('')
             setError('')
           }}
         >
           <form className="form-grid" action={createDepositAccount}>
             {error && <div className="auth-error span-2">{error}</div>}
             <label>
-              Nama platform
-              <input name="platform" required minLength={2} maxLength={100} placeholder="Meta Ads" />
+              Nama/fungsi VCC
+              <input name="platform" required minLength={2} maxLength={100} placeholder="Facebook Ads Utama" />
             </label>
             <label>
-              Nama akun bisnis
-              <input name="institution" required minLength={2} maxLength={100} placeholder="Emisell Ads" />
+              Provider
+              <input name="institution" required minLength={2} maxLength={100} defaultValue="Selow.id" />
             </label>
             <label>
-              ID akun <span className="optional-label">Opsional</span>
-              <input name="maskedNumber" maxLength={20} placeholder="•••• 1234" />
+              Nomor VCC
+              <input name="vccNumber" inputMode="numeric" autoComplete="off" minLength={4} maxLength={24} value={newVccNumber} onChange={event=>setNewVccNumber(event.target.value.replace(/[^0-9 -]/g,''))} placeholder="Masukkan nomor VCC" required />
+              <small>Hanya 4 digit terakhir yang dikirim dan disimpan. Jangan masukkan CVV.</small>
             </label>
             <label>
               Mata uang
@@ -470,19 +471,21 @@ export function Deposits() {
               <input name="lowBalanceThreshold" type="number" min="0" step="1000" defaultValue="1000000" required />
               <small>Dashboard memberi peringatan ketika saldo platform berada di bawah nominal ini.</small>
             </label>
-            <div className="form-note span-2">Saldo awal dibuat Rp 0. Setelah akun tersimpan, formulir top-up langsung terbuka.</div>
+            <div className="vcc-security-note span-2"><WalletCards size={19}/><span><strong>Aman untuk identifikasi</strong><small>Sistem hanya menyimpan format •••• {lastFour(newVccNumber)||'1234'}. Nomor lengkap tidak pernah dikirim ke server.</small></span></div>
+            <div className="form-note span-2">Saldo VCC dibuat Rp 0. Setelah kartu tersimpan, formulir top-up langsung terbuka.</div>
             <div className="modal-actions span-2">
               <Button
                 variant="secondary"
                 onClick={() => {
                   setCreateDeposit(false)
+                  setNewVccNumber('')
                   setError('')
                 }}
               >
                 Batal
               </Button>
               <Button type="submit" disabled={saving}>
-                {saving ? 'Membuat…' : 'Buat & lanjut top-up'}
+                {saving ? 'Membuat…' : 'Simpan VCC & top-up'}
               </Button>
             </div>
           </form>

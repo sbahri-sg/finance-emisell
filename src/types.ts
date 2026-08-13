@@ -67,6 +67,7 @@ export interface DepositAccount {
   id: string
   platform: string
   accountName: string
+  maskedNumber?: string
   balance: number
   monthlyUsage: number
   dailyAverage: number

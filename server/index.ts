@@ -744,6 +744,8 @@ app.post('/api/accounts', requireAuth, requireFinance, async (req: AuthedRequest
     const input = accountInput.parse(req.body),
       org = req.auth!.organizationId,
       c = await pool.connect()
+    if (input.kind === 'deposit' && input.maskedNumber && !/^•••• [0-9]{4}$/.test(input.maskedNumber))
+      return res.status(400).json({ error: 'Identitas VCC hanya boleh berisi 4 digit terakhir' })
     try {
       await c.query('begin')
       const account = await c.query(`insert into accounts(organization_id,name,institution,kind,masked_number,currency,low_balance_threshold,color) values($1,$2,$3,$4,$5,$6,$7,$8) returning id`, [org, input.name, input.institution || null, input.kind, input.maskedNumber || null, input.currency, input.lowBalanceThreshold || null, input.color])
@@ -782,6 +784,8 @@ app.patch('/api/accounts/:id', requireAuth, requireFinance, async (req: AuthedRe
   try {
     const input = accountEditInput.parse(req.body),
       org = req.auth!.organizationId
+    if (input.kind === 'deposit' && input.maskedNumber && !/^•••• [0-9]{4}$/.test(input.maskedNumber))
+      return res.status(400).json({ error: 'Identitas VCC hanya boleh berisi 4 digit terakhir' })
     const updated = await pool.query(`update accounts set name=$1,institution=$2,kind=$3,masked_number=$4,currency=$5,low_balance_threshold=$6,color=$7,updated_at=now() where id=$8 and organization_id=$9 and active and kind<>'clearing' returning id`, [input.name, input.institution || null, input.kind, input.maskedNumber || null, input.currency, input.lowBalanceThreshold || null, input.color, req.params.id, org])
     if (!updated.rowCount) return res.status(404).json({ error: 'Rekening tidak ditemukan' })
     await pool.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'account',$3,'update',$4)`, [org, req.auth!.userId, req.params.id, JSON.stringify(input)])

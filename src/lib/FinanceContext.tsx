@@ -80,6 +80,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
           id: a.id,
           platform: a.name,
           accountName: a.institution,
+          maskedNumber: a.maskedNumber,
           balance: a.balance,
           monthlyUsage: a.monthlyUsage || 0,
           dailyAverage: a.dailyAverage || 0,
