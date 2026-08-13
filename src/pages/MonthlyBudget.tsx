@@ -161,6 +161,31 @@ export function MonthlyBudget() {
     )
   }
   const lineItemsTotal = lineItems.reduce((sum, item) => sum + numberValue(item.quantity) * numberValue(item.unitPrice), 0)
+  async function removeSavedLineItem(category: BudgetCategory, item: BudgetLineItem, itemIndex: number) {
+    if (numberValue(item.purchasedQuantity) > 0) {
+      setError(`${item.name} sudah pernah dibeli. Item dipertahankan agar histori transaksi tetap akurat.`)
+      return
+    }
+    if (category.lineItems.length <= 1) {
+      setError('Item terakhir tidak dapat dihapus. Ubah model pos menjadi “Tetap” jika rincian item tidak lagi diperlukan.')
+      return
+    }
+    if (!window.confirm(`Hapus “${item.name}” dari rincian RAB ${category.name}?`)) return
+    const nextItems = category.lineItems.filter((_, index) => index !== itemIndex)
+    await request(`/api/budget-categories/${category.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        name: category.name,
+        expenseCategory: category.expenseCategory,
+        details: nextItems.map((candidate) => candidate.name),
+        budgetModel: category.budgetModel,
+        lineItems: nextItems.map((candidate) => ({ id: candidate.id, name: candidate.name, quantity: candidate.quantity, unitPrice: candidate.unitPrice })),
+        categoryType: category.categoryType,
+        plannedAmount: nextItems.reduce((sum, candidate) => sum + candidate.quantity * candidate.unitPrice, 0),
+        color: category.color,
+      }),
+    })
+  }
   async function saveCategory(formData: FormData) {
     if (!data.budget) return
     const payload = {
@@ -371,6 +396,18 @@ export function MonthlyBudget() {
                               <span>{item.name}</span>
                               <span>{(item.purchasedQuantity || 0).toLocaleString('id-ID')} dibeli · sisa {(item.remainingQuantity ?? item.quantity).toLocaleString('id-ID')}</span>
                               <strong>{item.quantity.toLocaleString('id-ID')} × {formatIDR(item.unitPrice)}</strong>
+                              {data.budget?.status !== 'closed' && (
+                                <button
+                                  type="button"
+                                  className="budget-detail-delete"
+                                  aria-label={`Hapus ${item.name}`}
+                                  title={numberValue(item.purchasedQuantity) > 0 ? 'Tidak dapat dihapus karena sudah dipakai transaksi' : `Hapus ${item.name}`}
+                                  disabled={saving || numberValue(item.purchasedQuantity) > 0}
+                                  onClick={() => void removeSavedLineItem(category, item, index)}
+                                >
+                                  <Trash2 size={15} />
+                                </button>
+                              )}
                             </div>
                           ))}
                         </div>
@@ -458,7 +495,15 @@ export function MonthlyBudget() {
                     <input required type="number" min="1" step="1" inputMode="numeric" value={item.quantity} onWheel={(event) => event.currentTarget.blur()} onChange={(event) => updateLineItem(index, 'quantity', event.target.value)} />
                     <input required type="number" min="0" step="1" value={item.unitPrice} onChange={(event) => updateLineItem(index, 'unitPrice', event.target.value)} />
                     <strong>{formatIDR(item.quantity * item.unitPrice)}</strong>
-                    <button type="button" aria-label={`Hapus ${item.name || 'item'}`} onClick={() => setLineItems((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={15} /></button>
+                    <button
+                      type="button"
+                      aria-label={`Hapus ${item.name || 'item'}`}
+                      title={numberValue(item.purchasedQuantity) > 0 ? 'Tidak dapat dihapus karena sudah dipakai transaksi' : `Hapus ${item.name || 'item'}`}
+                      disabled={numberValue(item.purchasedQuantity) > 0}
+                      onClick={() => setLineItems((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                    >
+                      <Trash2 size={15} />
+                    </button>
                   </div>
                 ))}
                 {!lineItems.length && <div className="budget-line-empty">Belum ada item. Klik “Tambah item” untuk membuat rincian RAB.</div>}
