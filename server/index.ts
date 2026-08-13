@@ -390,7 +390,7 @@ app.patch('/api/expense-categories/:id', settingsLimit, requireAuth, requireUser
   try {
     const input = expenseCategoryLabelInput.parse(req.body), org = req.auth!.organizationId
     if (input.active === false) {
-      const openBudgetUsage = await pool.query(`select count(*)::int count from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id where bc.expense_category_id=$1 and bp.organization_id=$2 and bp.status<>'closed'`, [req.params.id, org])
+      const openBudgetUsage = await pool.query(`select count(*)::int count from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id where bc.expense_category_id=$1 and bp.organization_id=$2 and bp.status<>'closed' and bc.archived_at is null`, [req.params.id, org])
       if (openBudgetUsage.rows[0].count) return res.status(409).json({ error: 'Kategori masih digunakan oleh Pos RAB aktif. Ubah kategori pada Pos RAB terlebih dahulu.' })
       const active = await pool.query('select count(*)::int count from expense_categories where organization_id=$1 and active and id<>$2', [org, req.params.id])
       if (!active.rows[0].count) return res.status(409).json({ error: 'Minimal satu kategori harus tetap aktif' })
@@ -838,7 +838,7 @@ app.post('/api/accounts/:id/reconcile', requireAuth, requireFinance, async (req:
 })
 
 async function assertBudgetAvailable(c: import('pg').PoolClient, org: string, categoryId: string, amount: number, purchaseRequestId: string | undefined, role: Auth['role'], overrideReason?: string) {
-  const category = await c.query(`select bc.id,bc.name,bc.planned_amount::numeric planned,bp.status from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id where bc.id=$1 and bp.organization_id=$2 for update of bc,bp`, [categoryId, org])
+  const category = await c.query(`select bc.id,bc.name,bc.planned_amount::numeric planned,bp.status from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id where bc.id=$1 and bp.organization_id=$2 and bc.archived_at is null for update of bc,bp`, [categoryId, org])
   if (!category.rowCount)
     throw Object.assign(new Error('Pos anggaran tidak valid'), {
       statusCode: 400,
@@ -967,13 +967,13 @@ const expenseInput = z.object({
 
 async function assertBudgetItem(c: import('pg').PoolClient, org: string, categoryId: string, itemName?: string) {
   if (!itemName) return
-  const item = await c.query(`select 1 from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id where bc.id=$1 and bp.organization_id=$2 and exists(select 1 from jsonb_array_elements(bc.line_items) line where line->>'name'=$3)`, [categoryId, org, itemName])
+  const item = await c.query(`select 1 from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id where bc.id=$1 and bp.organization_id=$2 and bc.archived_at is null and exists(select 1 from jsonb_array_elements(bc.line_items) line where line->>'name'=$3)`, [categoryId, org, itemName])
   if (!item.rowCount) throw Object.assign(new Error('Item RAB tidak valid atau sudah berubah'), { statusCode: 400 })
 }
 
 type ExpenseBudgetItemInput = { budgetItemId: string; quantity: number; unitPrice: number }
 async function validateBudgetCart(c: import('pg').PoolClient, org: string, categoryId: string, items: ExpenseBudgetItemInput[], amount: number) {
-  const category = await c.query(`select bc.id,bc.budget_model,bc.line_items from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id where bc.id=$1 and bp.organization_id=$2 and bp.status<>'closed' for update of bc`, [categoryId, org])
+  const category = await c.query(`select bc.id,bc.budget_model,bc.line_items from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id where bc.id=$1 and bp.organization_id=$2 and bp.status<>'closed' and bc.archived_at is null for update of bc`, [categoryId, org])
   if (!category.rowCount) throw Object.assign(new Error('Pos RAB tidak valid atau periodenya sudah ditutup'), { statusCode: 400 })
   if (category.rows[0].budget_model !== 'multi_item') {
     if (items.length) throw Object.assign(new Error('Rincian item hanya dapat digunakan pada Pos RAB multi-item'), { statusCode: 400 })
@@ -1517,7 +1517,7 @@ app.post('/api/purchase-requests', requireAuth, async (req: AuthedRequest, res, 
     try {
       await c.query('begin')
       if (input.budgetCategoryId) {
-        const category = await c.query(`select 1 from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id where bc.id=$1 and bp.organization_id=$2 and bp.status<>'closed'`, [input.budgetCategoryId, req.auth!.organizationId])
+        const category = await c.query(`select 1 from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id where bc.id=$1 and bp.organization_id=$2 and bp.status<>'closed' and bc.archived_at is null`, [input.budgetCategoryId, req.auth!.organizationId])
         if (!category.rowCount) {
           await c.query('rollback')
           return res.status(400).json({
@@ -1745,8 +1745,11 @@ app.get('/api/budgets', requireAuth, async (req: AuthedRequest, res, next) => {
     coalesce((select sum(-te.amount) from transactions t join transaction_entries te on te.transaction_id=t.id join accounts a on a.id=te.account_id where t.organization_id=$1 and t.status='posted' and t.budget_category_id=bc.id and a.kind in('bank','cash','ewallet')),0)::numeric actual,
     coalesce((select sum(pr.estimated_total) from purchase_requests pr where pr.organization_id=$1 and pr.budget_category_id=bc.id and pr.status='submitted'),0)::numeric "pendingAmount",
     coalesce((select sum(pr.estimated_total) from purchase_requests pr where pr.organization_id=$1 and pr.budget_category_id=bc.id and pr.status='approved'),0)::numeric "committedAmount",
-    (not exists(select 1 from transactions t where t.budget_category_id=bc.id) and not exists(select 1 from purchase_requests pr where pr.budget_category_id=bc.id)) "canDelete"
-    from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id left join expense_categories ec on ec.id=bc.expense_category_id where bc.budget_period_id=$2 order by bc.created_at,bc.name`,
+    (not exists(
+      select 1 from transactions t where t.budget_category_id=bc.id and t.kind<>'reversal' and t.status in('draft','pending','posted')
+      and not exists(select 1 from transactions r where r.reversal_of=t.id and r.status='posted')
+    ) and not exists(select 1 from purchase_requests pr where pr.budget_category_id=bc.id and pr.status in('submitted','approved','purchased'))) "canDelete"
+    from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id left join expense_categories ec on ec.id=bc.expense_category_id where bc.budget_period_id=$2 and bc.archived_at is null order by bc.created_at,bc.name`,
       [req.auth!.organizationId, period.rows[0].id],
     )
     res.json({ budget: period.rows[0], categories: categories.rows })
@@ -1853,7 +1856,7 @@ app.post('/api/budgets/copy-previous', requireAuth, requireFinance, async (req: 
         return res.status(404).json({ error: 'RAB bulan sebelumnya belum tersedia' })
       }
       const created = await c.query(`insert into budget_periods(organization_id,month,notes,created_by) values($1,$2::date,'Disalin dari bulan sebelumnya',$3) returning id`, [req.auth!.organizationId, `${month}-01`, req.auth!.userId])
-      await c.query(`insert into budget_categories(budget_period_id,name,expense_category,expense_category_id,details,budget_model,line_items,category_type,planned_amount,color) select $1,name,expense_category,expense_category_id,details,budget_model,line_items,category_type,planned_amount,color from budget_categories where budget_period_id=$2`, [created.rows[0].id, previous.rows[0].id])
+      await c.query(`insert into budget_categories(budget_period_id,name,expense_category,expense_category_id,details,budget_model,line_items,category_type,planned_amount,color) select $1,name,expense_category,expense_category_id,details,budget_model,line_items,category_type,planned_amount,color from budget_categories where budget_period_id=$2 and archived_at is null`, [created.rows[0].id, previous.rows[0].id])
       await c.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'budget_period',$3,'copy_previous',$4)`, [req.auth!.organizationId, req.auth!.userId, created.rows[0].id, JSON.stringify({ month })])
       await c.query('commit')
       res.status(201).json({ id: created.rows[0].id })
@@ -1896,7 +1899,7 @@ app.patch('/api/budget-categories/:id', requireAuth, requireFinance, async (req:
       if (!next) return res.status(409).json({ error: `${used.name} sudah pernah dibeli dan tidak dapat dihapus dari RAB` })
       if (next.quantity < Number(used.quantity)) return res.status(409).json({ error: `Qty rencana ${used.name} tidak boleh lebih kecil dari ${used.quantity} yang sudah dibeli` })
     }
-    const category = await pool.query(`update budget_categories bc set name=$1,expense_category=$2,expense_category_id=$3,details=$4,budget_model=$5,line_items=$6,category_type=$7,planned_amount=$8,color=$9,updated_at=now() from budget_periods bp where bc.id=$10 and bp.id=bc.budget_period_id and bp.organization_id=$11 and bp.status<>'closed' returning bc.id`, [input.name, expenseCategory.name, expenseCategory.id, input.details, input.budgetModel, JSON.stringify(input.lineItems), input.categoryType, input.plannedAmount, input.color, req.params.id, req.auth!.organizationId])
+    const category = await pool.query(`update budget_categories bc set name=$1,expense_category=$2,expense_category_id=$3,details=$4,budget_model=$5,line_items=$6,category_type=$7,planned_amount=$8,color=$9,updated_at=now() from budget_periods bp where bc.id=$10 and bp.id=bc.budget_period_id and bp.organization_id=$11 and bp.status<>'closed' and bc.archived_at is null returning bc.id`, [input.name, expenseCategory.name, expenseCategory.id, input.details, input.budgetModel, JSON.stringify(input.lineItems), input.categoryType, input.plannedAmount, input.color, req.params.id, req.auth!.organizationId])
     if (!category.rowCount)
       return res.status(404).json({
         error: 'Pos anggaran tidak ditemukan atau RAB sudah ditutup',
@@ -1916,7 +1919,7 @@ app.delete('/api/budget-categories/:id', requireAuth, requireFinance, async (req
     const category = await c.query(
       `select bc.id,bc.name,bc.category_type "categoryType",bc.budget_model "budgetModel",bc.planned_amount::numeric "plannedAmount",bc.expense_category "expenseCategory",bc.details,bc.line_items "lineItems",bc.color
        from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id
-       where bc.id=$1 and bp.organization_id=$2 and bp.status<>'closed'
+       where bc.id=$1 and bp.organization_id=$2 and bp.status<>'closed' and bc.archived_at is null
        for update of bc`,
       [req.params.id, req.auth!.organizationId],
     )
@@ -1927,17 +1930,21 @@ app.delete('/api/budget-categories/:id', requireAuth, requireFinance, async (req
     const usage = await c.query(
       `select
          (select count(*)::int from transactions where budget_category_id=$1) "transactionCount",
-         (select count(*)::int from purchase_requests where budget_category_id=$1) "requestCount"`,
+         (select count(*)::int from transactions t where t.budget_category_id=$1 and t.kind<>'reversal' and t.status in('draft','pending','posted') and not exists(select 1 from transactions r where r.reversal_of=t.id and r.status='posted')) "activeTransactionCount",
+         (select count(*)::int from purchase_requests where budget_category_id=$1) "requestCount",
+         (select count(*)::int from purchase_requests where budget_category_id=$1 and status in('submitted','approved','purchased')) "activeRequestCount"`,
       [req.params.id],
     )
-    if (usage.rows[0].transactionCount > 0 || usage.rows[0].requestCount > 0) {
+    if (usage.rows[0].activeTransactionCount > 0 || usage.rows[0].activeRequestCount > 0) {
       await c.query('rollback')
-      return res.status(409).json({ error: 'Pos sudah digunakan oleh transaksi atau pengajuan dan tidak dapat dihapus. Ubah nama atau nominalnya jika perlu.' })
+      return res.status(409).json({ error: 'Pos masih memiliki transaksi efektif atau pengajuan aktif dan belum dapat diremove.' })
     }
-    await c.query('delete from budget_categories where id=$1', [req.params.id])
-    await c.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'budget_category',$3,'delete',$4)`, [req.auth!.organizationId, req.auth!.userId, req.params.id, JSON.stringify(category.rows[0])])
+    const archived = usage.rows[0].transactionCount > 0 || usage.rows[0].requestCount > 0
+    if (archived) await c.query('update budget_categories set archived_at=now(),archived_by=$2,updated_at=now() where id=$1', [req.params.id, req.auth!.userId])
+    else await c.query('delete from budget_categories where id=$1', [req.params.id])
+    await c.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'budget_category',$3,$4,$5)`, [req.auth!.organizationId, req.auth!.userId, req.params.id, archived ? 'archive' : 'delete', JSON.stringify({ ...category.rows[0], usage: usage.rows[0] })])
     await c.query('commit')
-    res.json({ ok: true })
+    res.json({ ok: true, archived })
   } catch (e) {
     await c.query('rollback')
     next(e)
