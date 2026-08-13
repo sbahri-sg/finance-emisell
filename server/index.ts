@@ -330,6 +330,7 @@ const expenseCategoryLabelInput = z.object({
   color: z.string().regex(/^#[0-9A-Fa-f]{6}$/),
   active: z.boolean().optional(),
 })
+const expenseCategoryMergeInput = z.object({ replacementCategoryId: z.string().uuid().optional() })
 
 async function getExpenseCategory(c: Pick<typeof pool, 'query'> | import('pg').PoolClient, org: string, name: string, allowInactive = false) {
   const category = await c.query(`select id,name,color,active from expense_categories where organization_id=$1 and lower(name)=lower($2)${allowInactive ? '' : ' and active'}`, [org, name])
@@ -409,7 +410,7 @@ app.delete('/api/expense-categories/:id', settingsLimit, requireAuth, requireUse
   const c = await pool.connect()
   try {
     await c.query('begin')
-    const org = req.auth!.organizationId
+    const org = req.auth!.organizationId, input = expenseCategoryMergeInput.parse(req.body || {})
     const category = await c.query('select id,name,active from expense_categories where id=$1 and organization_id=$2 for update', [req.params.id, org])
     if (!category.rowCount) {
       await c.query('rollback')
@@ -418,9 +419,23 @@ app.delete('/api/expense-categories/:id', settingsLimit, requireAuth, requireUse
     const usage = await c.query(`select
       (select count(*)::int from transactions where expense_category_id=$1) "transactionCount",
       (select count(*)::int from budget_categories where expense_category_id=$1) "budgetCount"`, [req.params.id])
-    if (usage.rows[0].transactionCount || usage.rows[0].budgetCount) {
-      await c.query('rollback')
-      return res.status(409).json({ error: 'Kategori sudah digunakan pada transaksi atau Pos RAB. Nonaktifkan kategori agar histori tetap aman.' })
+    const isUsed = Boolean(usage.rows[0].transactionCount || usage.rows[0].budgetCount)
+    let replacement: { id: string; name: string } | null = null
+    if (isUsed) {
+      if (!input.replacementCategoryId || input.replacementCategoryId === req.params.id) {
+        await c.query('rollback')
+        return res.status(409).json({ error: 'Pilih kategori pengganti sebelum menghapus kategori yang sudah digunakan.' })
+      }
+      const target = await c.query('select id,name from expense_categories where id=$1 and organization_id=$2 and active and id<>$3 for update', [input.replacementCategoryId, org, req.params.id])
+      if (!target.rowCount) {
+        await c.query('rollback')
+        return res.status(400).json({ error: 'Kategori pengganti tidak valid atau sedang nonaktif.' })
+      }
+      const targetCategory = target.rows[0] as { id: string; name: string }
+      replacement = targetCategory
+      await c.query('update transactions set expense_category_id=$1 where expense_category_id=$2 and organization_id=$3', [targetCategory.id, req.params.id, org])
+      await c.query(`update budget_categories bc set expense_category_id=$1,updated_at=now()
+        from budget_periods bp where bc.budget_period_id=bp.id and bc.expense_category_id=$2 and bp.organization_id=$3`, [targetCategory.id, req.params.id, org])
     }
     if (category.rows[0].active) {
       const remaining = await c.query('select count(*)::int count from expense_categories where organization_id=$1 and active and id<>$2', [org, req.params.id])
@@ -429,13 +444,13 @@ app.delete('/api/expense-categories/:id', settingsLimit, requireAuth, requireUse
         return res.status(409).json({ error: 'Minimal satu kategori harus tetap aktif' })
       }
     }
-    await c.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'expense_category',$3,'delete',$4)`, [org, req.auth!.userId, category.rows[0].id, JSON.stringify({ name: category.rows[0].name })])
+    await c.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'expense_category',$3,$4,$5)`, [org, req.auth!.userId, category.rows[0].id, replacement ? 'merge_delete' : 'delete', JSON.stringify({ name: category.rows[0].name, usage: usage.rows[0], replacement })])
     await c.query('delete from expense_categories where id=$1 and organization_id=$2', [req.params.id, org])
     await c.query('commit')
-    res.json({ ok: true })
+    res.json({ ok: true, merged: Boolean(replacement), replacement })
   } catch (e) {
     await c.query('rollback')
-    if ((e as { code?: string }).code === '23503') return res.status(409).json({ error: 'Kategori sudah digunakan dan tidak dapat dihapus. Nonaktifkan kategori sebagai gantinya.' })
+    if ((e as { code?: string }).code === '23503') return res.status(409).json({ error: 'Kategori masih memiliki referensi lain dan belum dapat dihapus.' })
     next(e)
   } finally {
     c.release()

@@ -129,6 +129,17 @@ empty_deposit=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' 
 curl -fsS -b "$cookie_file" -X PATCH -H 'Content-Type: application/json' -d '{"name":"Edited Deposit","institution":"Edited Test","kind":"deposit","currency":"IDR","lowBalanceThreshold":250000,"color":"#225c55"}' "$base/api/accounts/$empty_deposit" | jq -e '.ok==true' >/dev/null
 curl -fsS -b "$cookie_file" -X DELETE "$base/api/accounts/$empty_deposit" | jq -e '.ok==true' >/dev/null
 
+merge_balance_before=$(curl -fsS -b "$cookie_file" "$base/api/bootstrap" | jq -er --arg account "$account_id" '.accounts[]|select(.id==$account)|.balance')
+merge_entries_before=$(docker compose exec -T postgres sh -lc 'psql -U "$POSTGRES_USER" -d emisell_finance_test -Atc "select count(*) from transaction_entries"')
+merge_payload=$(jq -nc --arg replacement "$custom_category_id" '{replacementCategoryId:$replacement}')
+curl -fsS -b "$cookie_file" -X DELETE -H 'Content-Type: application/json' -d "$merge_payload" "$base/api/expense-categories/$used_expense_category_id" | jq -e --arg replacement "$custom_category_id" '.ok==true and .merged==true and .replacement.id==$replacement' >/dev/null
+curl -fsS -b "$cookie_file" "$base/api/settings" | jq -e --arg removed "$used_expense_category_id" '([.expenseCategories[]|select(.id==$removed)]|length)==0' >/dev/null
+curl -fsS -b "$cookie_file" "$base/api/budgets?month=2026-08" | jq -e --arg category "$category_id" '(.categories[]|select(.id==$category)|.expenseCategory)=="Pajak & Kepatuhan"' >/dev/null
+merge_balance_after=$(curl -fsS -b "$cookie_file" "$base/api/bootstrap" | jq -er --arg account "$account_id" '.accounts[]|select(.id==$account)|.balance')
+merge_entries_after=$(docker compose exec -T postgres sh -lc 'psql -U "$POSTGRES_USER" -d emisell_finance_test -Atc "select count(*) from transaction_entries"')
+[ "$merge_balance_before" = "$merge_balance_after" ]
+[ "$merge_entries_before" = "$merge_entries_after" ]
+
 curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"status":"closed"}' "$base/api/budgets/$budget_id/status" | jq -e '.ok==true' >/dev/null
 closed_payload=$(jq -nc --arg account "$account_id" '{transactionDate:"2026-08-11",amount:1000,accountId:$account,description:"Should be blocked",category:"Lain-Lain",paymentMethod:"transfer"}')
 closed_status=$(curl -sS -o /dev/null -w '%{http_code}' -b "$cookie_file" -H 'Content-Type: application/json' -d "$closed_payload" "$base/api/expenses")
