@@ -85,6 +85,9 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
           dailyAverage: a.dailyAverage || 0,
           lowBalanceThreshold: a.lowBalanceThreshold || 0,
           color: a.color,
+          reconciled: a.reconciled,
+          lastReconciledAt: a.lastReconciledAt,
+          reconciliationDifference: a.reconciliationDifference || 0,
         })),
       refresh,
     })

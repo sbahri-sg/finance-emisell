@@ -1150,7 +1150,7 @@ app.post('/api/deposits/:id/usage', requireAuth, requireFinance, async (req: Aut
           amount: z.number().positive().max(1e15),
           description: z.string().trim().min(3).max(240),
           reference: z.string().trim().max(100).optional(),
-          budgetCategoryId: z.string().uuid().optional(),
+          budgetCategoryId: z.string().uuid(),
           overrideReason: z.string().trim().max(500).optional(),
         })
         .parse(req.body),
@@ -1169,11 +1169,18 @@ app.post('/api/deposits/:id/usage', requireAuth, requireFinance, async (req: Aut
         await c.query('rollback')
         return res.status(409).json({ error: 'Saldo deposit tidak mencukupi' })
       }
-      let budgetCheck = null
-      if (input.budgetCategoryId) budgetCheck = await assertBudgetAvailable(c, org, input.budgetCategoryId, input.amount, undefined, req.auth!.role, input.overrideReason)
+      const budgetCheck = await assertBudgetAvailable(c, org, input.budgetCategoryId, input.amount, undefined, req.auth!.role, input.overrideReason)
+      const budgetCategory = await c.query(`select bc.name,ec.id "expenseCategoryId",ec.name "expenseCategory"
+        from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id
+        join expense_categories ec on ec.id=bc.expense_category_id
+        where bc.id=$1 and bp.organization_id=$2 and bc.archived_at is null and ec.active`, [input.budgetCategoryId, org])
+      if (!budgetCategory.rowCount) {
+        await c.query('rollback')
+        return res.status(409).json({ error: 'Pos RAB belum memiliki kategori pengeluaran aktif. Perbarui Pos RAB terlebih dahulu.' })
+      }
       await c.query(`insert into accounts(organization_id,name,kind,currency,color) values($1,'Pengeluaran','clearing',$2,'#d89b50') on conflict(organization_id,name) do nothing`, [org, deposit.rows[0].currency])
       const counterpart = await c.query(`select id from accounts where organization_id=$1 and name='Pengeluaran' and kind='clearing' and active`, [org])
-      const transaction = await c.query(`insert into transactions(organization_id,transaction_date,kind,status,description,category,reference,budget_category_id,created_by,posted_by,posted_at) values($1,$2::date,'deposit_usage','posted',$3,'Pemakaian deposit',$4,$5,$6,$6,now()) returning id`, [org, input.transactionDate, input.description, input.reference || null, input.budgetCategoryId || null, req.auth!.userId])
+      const transaction = await c.query(`insert into transactions(organization_id,transaction_date,kind,status,description,category,expense_category_id,reference,budget_category_id,created_by,posted_by,posted_at) values($1,$2::date,'deposit_usage','posted',$3,$4,$5,$6,$7,$8,$8,now()) returning id`, [org, input.transactionDate, input.description, budgetCategory.rows[0].expenseCategory, budgetCategory.rows[0].expenseCategoryId, input.reference || null, input.budgetCategoryId, req.auth!.userId])
       await c.query(`insert into transaction_entries(transaction_id,account_id,amount) values($1,$2,$3),($1,$4,$5)`, [transaction.rows[0].id, deposit.rows[0].id, -input.amount, counterpart.rows[0].id, input.amount])
       await c.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'transaction',$3,'deposit_usage',$4)`, [
         org,

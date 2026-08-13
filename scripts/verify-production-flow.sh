@@ -104,7 +104,12 @@ reverse_status=$(curl -sS -o /dev/null -w '%{http_code}' -b "$cookie_file" -H 'C
 topup_payload=$(jq -nc --arg account "$account_id" '{transactionDate:"2026-08-11",sourceAccountId:$account,amount:2000000,proofUrl:"https://example.invalid/topup-proof"}')
 curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d "$topup_payload" "$base/api/deposits/$deposit_id/topup" | jq -er '.id' >/dev/null
 usage_payload=$(jq -nc --arg category "$category_id" '{transactionDate:"2026-08-11",amount:300000,description:"Pemakaian Meta Ads test",budgetCategoryId:$category}')
-curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d "$usage_payload" "$base/api/deposits/$deposit_id/usage" | jq -er '.id' >/dev/null
+deposit_usage_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d "$usage_payload" "$base/api/deposits/$deposit_id/usage" | jq -er '.id')
+curl -fsS -b "$cookie_file" "$base/api/bootstrap" | jq -e --arg transaction "$deposit_usage_id" --arg deposit "$deposit_id" '(.transactions[]|select(.id==$transaction)|.category)=="Kebersihan & Perlengkapan" and (.accounts[]|select(.id==$deposit)|.balance|tonumber)==1700000' >/dev/null
+deposit_entries_before_reconcile=$(docker compose exec -T postgres sh -lc 'psql -U "$POSTGRES_USER" -d emisell_finance_test -Atc "select count(*) from transaction_entries"')
+curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"statementDate":"2026-08-11","statementBalance":1700000,"note":"Saldo provider cocok"}' "$base/api/accounts/$deposit_id/reconcile" | jq -e '(.difference|tonumber)==0' >/dev/null
+deposit_entries_after_reconcile=$(docker compose exec -T postgres sh -lc 'psql -U "$POSTGRES_USER" -d emisell_finance_test -Atc "select count(*) from transaction_entries"')
+[ "$deposit_entries_before_reconcile" = "$deposit_entries_after_reconcile" ]
 
 bill_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"vendor":"Cloud Test","description":"Server bulanan","dueDate":"2026-08-15","unitPrice":50000,"quantity":2,"paymentMethod":"transfer","currency":"IDR","recurrence":"monthly","owner":"IT","autoRenew":true,"reminderDays":[14,7,1]}' "$base/api/bills" | jq -er '.id')
 bill_payload=$(jq -nc --arg account "$account_id" --arg category "$category_id" '{transactionDate:"2026-08-11",accountId:$account,amount:100000,reference:"BILL-TEST-001",budgetCategoryId:$category}')

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { AlertTriangle, ArrowDownLeft, ArrowUpRight, Pencil, Plus, Trash2, TrendingDown } from 'lucide-react'
+import { AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, CheckCircle2, ClipboardCheck, Pencil, Plus, ReceiptText, Trash2, TrendingDown, WalletCards } from 'lucide-react'
 import { useFinance } from '../lib/FinanceContext'
 import { formatDate, formatIDR } from '../lib/format'
 import { Badge, Button, Card, ConfirmActionModal, Modal, PageHeader } from '../components/ui'
@@ -16,6 +16,8 @@ export function Deposits() {
     } | null>(null),
     [createDeposit, setCreateDeposit] = useState(false),
     [editingDeposit, setEditingDeposit] = useState<Account | null>(null),
+    [reconcileDeposit, setReconcileDeposit] = useState<DepositAccount | null>(null),
+    [statementBalance, setStatementBalance] = useState(0),
     [deleteTarget, setDeleteTarget] = useState<Account | null>(null),
     [saving, setSaving] = useState(false),
     [error, setError] = useState(''),
@@ -171,6 +173,25 @@ export function Deposits() {
       setSaving(false)
     }
   }
+  async function reconcileDepositBalance(formData: FormData) {
+    if (!reconcileDeposit) return
+    setSaving(true)
+    setError('')
+    try {
+      const response = await fetch(`/api/accounts/${reconcileDeposit.id}/reconcile`, {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ statementDate: String(formData.get('statementDate')), statementBalance, note: String(formData.get('note')).trim() || undefined }),
+      })
+      const result = (await response.json().catch(() => ({}))) as { error?: string }
+      if (!response.ok) throw new Error(result.error || 'Saldo deposit belum dapat dicocokkan')
+      await refresh()
+      setReconcileDeposit(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Terjadi kesalahan')
+    } finally {
+      setSaving(false)
+    }
+  }
   return (
     <>
       <PageHeader
@@ -210,6 +231,13 @@ export function Deposits() {
           <small>Rata-rata pemakaian 30 hari</small>
         </div>
       </div>
+      <Card className="deposit-flow-card">
+        <div className="deposit-flow-step"><span><WalletCards size={19}/></span><div><strong>1. Top-up Selow.id</strong><small>Rekening perusahaan berkurang, deposit bertambah. Belum menjadi biaya.</small></div></div>
+        <ArrowRight size={18}/>
+        <div className="deposit-flow-step"><span><ReceiptText size={19}/></span><div><strong>2. Catat debit VCC</strong><small>Pilih RAB sesuai tujuan, misalnya Facebook Ads atau server.</small></div></div>
+        <ArrowRight size={18}/>
+        <div className="deposit-flow-step"><span><ClipboardCheck size={19}/></span><div><strong>3. Cocokkan saldo</strong><small>Bandingkan saldo sistem dengan saldo aktual di provider.</small></div></div>
+      </Card>
       <div className="deposit-cards">
         {deposits.map((deposit) => {
           const days = deposit.dailyAverage > 0 ? Math.floor(deposit.balance / deposit.dailyAverage) : null,
@@ -229,7 +257,7 @@ export function Deposits() {
                     <AlertTriangle size={12} /> Saldo rendah
                   </Badge>
                 ) : (
-                  <Badge tone="success">Aktif</Badge>
+                  <Badge tone={deposit.reconciled ? 'success' : 'warning'}>{deposit.reconciled ? 'Saldo cocok' : 'Perlu dicocokkan'}</Badge>
                 )}
               </div>
               <div className="deposit-main">
@@ -262,6 +290,14 @@ export function Deposits() {
                   <span>Batas minimum</span>
                   <strong>{formatIDR(deposit.lowBalanceThreshold)}</strong>
                 </div>
+                <div>
+                  <span>Rekonsiliasi terakhir</span>
+                  <strong>{deposit.lastReconciledAt ? formatDate(deposit.lastReconciledAt) : 'Belum pernah'}</strong>
+                </div>
+                <div>
+                  <span>Selisih terakhir</span>
+                  <strong className={Math.abs(deposit.reconciliationDifference || 0) > 0.005 ? 'negative' : 'positive'}>{formatIDR(deposit.reconciliationDifference || 0)}</strong>
+                </div>
               </div>
               {canManage && (
                 <div className="page-actions">
@@ -284,7 +320,10 @@ export function Deposits() {
                       setAction({ kind: 'usage', deposit })
                     }}
                   >
-                    <ArrowUpRight size={15} /> Catat pemakaian
+                    <ArrowUpRight size={15} /> Catat debit VCC
+                  </Button>
+                  <Button variant="secondary" onClick={() => { setError(''); setStatementBalance(deposit.balance); setReconcileDeposit(deposit) }}>
+                    <ClipboardCheck size={15}/> Cocokkan saldo
                   </Button>
                   <Button
                     onClick={() => {
@@ -451,8 +490,8 @@ export function Deposits() {
       )}
       {action && (
         <Modal
-          title={`${action.kind === 'topup' ? 'Top-up' : 'Catat pemakaian'} ${action.deposit.platform}`}
-          description={action.kind === 'topup' ? 'Memindahkan dana dari rekening perusahaan ke aset deposit.' : 'Mengurangi deposit dan mencatat pengeluaran aktual.'}
+          title={`${action.kind === 'topup' ? 'Top-up' : 'Catat debit VCC'} ${action.deposit.platform}`}
+          description={action.kind === 'topup' ? 'Memindahkan dana dari rekening perusahaan ke aset deposit.' : 'Mengurangi deposit dan mengambil anggaran dari RAB.'}
           onClose={() => {
             setAction(null)
             setError('')
@@ -504,9 +543,9 @@ export function Deposits() {
                   <input name="description" required minLength={3} maxLength={240} placeholder="Pemakaian iklan periode berjalan" />
                 </label>
                 <label className="span-2">
-                  Pos RAB <span className="optional-label">Opsional</span>
-                  <select name="budgetCategoryId">
-                    <option value="">Di luar RAB</option>
+                  Sumber anggaran RAB
+                  <select name="budgetCategoryId" defaultValue="" required>
+                    <option value="" disabled>Pilih pos RAB</option>
                     {budgetCategories.map((category) => (
                       <option value={category.id} key={category.id}>
                         {category.name}
@@ -531,7 +570,7 @@ export function Deposits() {
                 <input name="reference" maxLength={100} />
               </label>
             )}
-            <div className="form-note span-2">{action.kind === 'topup' ? 'Top-up memindahkan saldo rekening ke deposit, sehingga total aset perusahaan tetap sama.' : 'Pemakaian mengurangi saldo deposit dan dicatat sebagai pengeluaran perusahaan.'}</div>
+            <div className="form-note span-2">{action.kind === 'topup' ? 'Top-up memindahkan saldo rekening ke deposit, sehingga total aset perusahaan tetap sama.' : 'Debit VCC mengurangi saldo deposit, menjadi pengeluaran aktual, dan mengurangi sisa RAB.'}</div>
             <div className="modal-actions span-2">
               <Button variant="secondary" onClick={() => setAction(null)}>
                 Batal
@@ -555,6 +594,17 @@ export function Deposits() {
         onClose={() => { setDeleteTarget(null); setError('') }}
         onConfirm={() => void removeDeposit()}
       />
+      {reconcileDeposit&&<Modal title={`Cocokkan saldo ${reconcileDeposit.platform}`} description="Masukkan saldo yang terlihat di dashboard provider saat ini." onClose={()=>{setReconcileDeposit(null);setError('')}}>
+        <form className="form-grid" action={reconcileDepositBalance}>
+          {error&&<div className="auth-error span-2">{error}</div>}
+          <div className="deposit-reconcile-summary span-2"><div><span>Saldo menurut sistem</span><strong>{formatIDR(reconcileDeposit.balance)}</strong></div><div><span>Saldo aktual provider</span><strong>{formatIDR(statementBalance)}</strong></div><div className={Math.abs(statementBalance-reconcileDeposit.balance)>0.005?'difference':''}><span>Selisih</span><strong>{formatIDR(statementBalance-reconcileDeposit.balance)}</strong></div></div>
+          <label>Tanggal pencocokan<input name="statementDate" type="date" defaultValue={today} required/></label>
+          <label>Saldo aktual Selow.id<input name="statementBalance" type="number" min="0" step="1" value={statementBalance} onChange={event=>setStatementBalance(Number(event.target.value))} required/></label>
+          <label className="span-2">Catatan <span className="optional-label">Opsional</span><textarea name="note" maxLength={500} placeholder="Contoh: saldo dilihat dari dashboard Selow.id"/></label>
+          {Math.abs(statementBalance-reconcileDeposit.balance)>0.005?<div className="deposit-reconcile-warning span-2"><AlertTriangle size={18}/><span><strong>Ada debit yang belum tercatat</strong><small>Setelah menyimpan pencocokan, catat debit VCC sebesar selisih melalui RAB agar saldo sistem menjadi sama.</small></span></div>:<div className="income-journal-note span-2"><CheckCircle2 size={19}/><div><strong>Saldo sudah cocok</strong><span>Tidak ada debit VCC yang belum dicatat.</span></div></div>}
+          <div className="modal-actions span-2"><Button variant="secondary" onClick={()=>setReconcileDeposit(null)}>Batal</Button><Button type="submit" disabled={saving}>{saving?'Menyimpan…':'Simpan pencocokan'}</Button></div>
+        </form>
+      </Modal>}
     </>
   )
 }

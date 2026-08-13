@@ -72,6 +72,9 @@ export interface DepositAccount {
   dailyAverage: number
   lowBalanceThreshold: number
   color: string
+  reconciled?: boolean
+  lastReconciledAt?: string
+  reconciliationDifference?: number
 }
 
 export interface CashflowPoint {
