@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Check, CheckCircle2, Clock3, CreditCard, PackageCheck, Plus, Search, ShoppingBag, ShoppingCart, XCircle } from 'lucide-react'
 import { Badge, Button, Card, ConfirmActionModal, Modal, PageHeader } from '../components/ui'
+import { MoneyInput } from '../components/MoneyInput'
 import { useFinance } from '../lib/FinanceContext'
 import { formatDate, formatIDR } from '../lib/format'
 import type { BudgetCategory, PurchaseRequest, PurchaseRequestStatus } from '../types'
@@ -374,7 +375,7 @@ export function PurchaseRequests() {
             </label>
             <label>
               Estimasi harga per item
-              <input name="unitPrice" type="number" min="1" step="1" required />
+              <MoneyInput name="unitPrice" min="1" required />
             </label>
             <label className="span-2">
               Pos RAB <span className="optional-label">Opsional</span>
@@ -457,7 +458,7 @@ export function PurchaseRequests() {
             </label>
             <label>
               Nominal aktual
-              <input name="amount" type="number" min="1" step="1" defaultValue={payment.amount} required />
+              <MoneyInput name="amount" min="1" defaultValue={payment.amount} required />
             </label>
             <label className="span-2">
               Rekening pembayaran

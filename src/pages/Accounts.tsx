@@ -3,6 +3,7 @@ import { ArrowRightLeft, CheckCircle2, CircleAlert, Landmark, MoreHorizontal, Pl
 import { useFinance } from '../lib/FinanceContext'
 import { formatCurrency, formatDate, formatIDR } from '../lib/format'
 import { Badge, Button, Card, ConfirmActionModal, Modal, PageHeader } from '../components/ui'
+import { MoneyInput } from '../components/MoneyInput'
 import type { Account } from '../types'
 
 const today = new Date().toISOString().slice(0, 10)
@@ -267,11 +268,11 @@ export function Accounts() {
             </label>
             <label>
               Saldo awal
-              <input name="openingBalance" type="number" min="0" step="1" defaultValue="0" required />
+              <MoneyInput name="openingBalance" min="0" defaultValue="0" required />
             </label>
             <label>
               Batas saldo minimum
-              <input name="lowBalanceThreshold" type="number" min="0" step="1" defaultValue="0" />
+              <MoneyInput name="lowBalanceThreshold" min="0" defaultValue="0" />
             </label>
             <label>
               Warna
@@ -306,7 +307,7 @@ export function Accounts() {
             </label>
             <label>
               Saldo menurut bank/kas
-              <input name="statementBalance" type="number" step="1" defaultValue={reconcile.balance} required />
+              <MoneyInput name="statementBalance" defaultValue={reconcile.balance} required />
             </label>
             <label className="span-2">
               Catatan <span className="optional-label">Opsional</span>
@@ -338,7 +339,7 @@ export function Accounts() {
             </label>
             <label>
               Nominal
-              <input name="amount" type="number" min="1" step="1" required />
+              <MoneyInput name="amount" min="1" required />
             </label>
             <label>
               Dari rekening
@@ -407,7 +408,7 @@ export function Accounts() {
             </label>
             <label>
               Batas saldo minimum
-              <input name="lowBalanceThreshold" type="number" min="0" step="1" defaultValue={editing.lowBalanceThreshold || 0} />
+              <MoneyInput name="lowBalanceThreshold" min="0" defaultValue={editing.lowBalanceThreshold || 0} />
             </label>
             <label>
               Warna

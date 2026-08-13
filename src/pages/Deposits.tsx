@@ -4,6 +4,7 @@ import { AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, CheckCircle2, C
 import { useFinance } from '../lib/FinanceContext'
 import { formatDate, formatIDR } from '../lib/format'
 import { Badge, Button, Card, ConfirmActionModal, Modal, PageHeader } from '../components/ui'
+import { MoneyInput } from '../components/MoneyInput'
 import type { Account, BudgetCategory, DepositAccount } from '../types'
 import { readSelowWorkbook, type SelowImportRow } from '../lib/selowImport'
 
@@ -504,7 +505,7 @@ export function Deposits() {
             </label>
             <label>
               Batas saldo minimum
-              <input name="lowBalanceThreshold" type="number" min="0" step="1000" defaultValue={editingDeposit.lowBalanceThreshold || 0} />
+              <MoneyInput name="lowBalanceThreshold" min="0" defaultValue={editingDeposit.lowBalanceThreshold || 0} />
             </label>
             <label className="span-2">
               Warna indikator
@@ -562,7 +563,7 @@ export function Deposits() {
                     <div><span>Debit</span><strong className="negative">{formatIDR(importDebitTotal)}</strong></div>
                   </div>
                   <label className="span-2">Saldo akhir pada dashboard Selow.id
-                    <input name="statementBalance" type="number" min="0" step="0.01" value={importStatementBalance} onChange={(event)=>setImportStatementBalance(event.target.value)} placeholder="Contoh: 1924741.02" required/>
+                    <MoneyInput name="statementBalance" min="0" decimalScale={2} value={importStatementBalance} onValueChange={(value)=>setImportStatementBalance(String(value))} placeholder="Contoh: 1.924.741,02" required/>
                     <small>Sistem menghitung saldo pembuka periode secara otomatis agar saldo setelah impor sama dengan Selow.id.</small>
                   </label>
                   {importTopupTotal > 0 && <div className="vcc-security-note span-2"><ShieldCheck size={19}/><span><strong>Top-up pada file dianggap sebagai riwayat</strong><small>Total {formatIDR(importTopupTotal)} menambah riwayat VCC tanpa mengurangi rekening perusahaan. Untuk transfer baru, gunakan tombol Top-up sebelum mengimpor agar sistem mencocokkannya otomatis.</small></span></div>}
@@ -622,7 +623,7 @@ export function Deposits() {
             </label>
             <label className="span-2">
               Peringatan saldo minimum
-              <input name="lowBalanceThreshold" type="number" min="0" step="1000" defaultValue="1000000" required />
+              <MoneyInput name="lowBalanceThreshold" min="0" defaultValue="1000000" required />
               <small>Dashboard memberi peringatan ketika saldo platform berada di bawah nominal ini.</small>
             </label>
             <div className="vcc-security-note span-2"><WalletCards size={19}/><span><strong>Aman untuk identifikasi</strong><small>Sistem hanya menyimpan format •••• {lastFour(newVccNumber)||'1234'}. Nomor lengkap tidak pernah dikirim ke server.</small></span></div>
@@ -662,7 +663,7 @@ export function Deposits() {
             </label>
             <label>
               Nominal
-              <input name="amount" type="number" min="1" step="1" required />
+              <MoneyInput name="amount" min="1" required />
             </label>
             {action.kind === 'topup' ? (
               <>
@@ -756,7 +757,7 @@ export function Deposits() {
           {error&&<div className="auth-error span-2">{error}</div>}
           <div className="deposit-reconcile-summary span-2"><div><span>Saldo menurut sistem</span><strong>{formatIDR(reconcileDeposit.balance)}</strong></div><div><span>Saldo aktual provider</span><strong>{formatIDR(statementBalance)}</strong></div><div className={Math.abs(statementBalance-reconcileDeposit.balance)>0.005?'difference':''}><span>Selisih</span><strong>{formatIDR(statementBalance-reconcileDeposit.balance)}</strong></div></div>
           <label>Tanggal pencocokan<input name="statementDate" type="date" defaultValue={today} required/></label>
-          <label>Saldo aktual Selow.id<input name="statementBalance" type="number" min="0" step="1" value={statementBalance} onChange={event=>setStatementBalance(Number(event.target.value))} required/></label>
+          <label>Saldo aktual Selow.id<MoneyInput name="statementBalance" min="0" decimalScale={2} value={statementBalance} onValueChange={setStatementBalance} required/></label>
           <label className="span-2">Catatan <span className="optional-label">Opsional</span><textarea name="note" maxLength={500} placeholder="Contoh: saldo dilihat dari dashboard Selow.id"/></label>
           {Math.abs(statementBalance-reconcileDeposit.balance)>0.005?<div className="deposit-reconcile-warning span-2"><AlertTriangle size={18}/><span><strong>Ada debit yang belum tercatat</strong><small>Setelah menyimpan pencocokan, catat debit VCC sebesar selisih melalui RAB agar saldo sistem menjadi sama.</small></span></div>:<div className="income-journal-note span-2"><CheckCircle2 size={19}/><div><strong>Saldo sudah cocok</strong><span>Tidak ada debit VCC yang belum dicatat.</span></div></div>}
           <div className="modal-actions span-2"><Button variant="secondary" onClick={()=>setReconcileDeposit(null)}>Batal</Button><Button type="submit" disabled={saving}>{saving?'Menyimpan…':'Simpan pencocokan'}</Button></div>

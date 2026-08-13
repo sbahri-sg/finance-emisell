@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ArrowDownToLine, CheckCircle2, ChevronDown, Copy, Edit3, FolderPlus, PiggyBank, Plus, ReceiptText, Trash2, WalletCards } from 'lucide-react'
 import { Badge, Button, Card, ConfirmActionModal, Modal, PageHeader } from '../components/ui'
+import { MoneyInput } from '../components/MoneyInput'
 import { formatIDR } from '../lib/format'
 import type { BudgetCategory, BudgetCategoryType, BudgetLineItem, BudgetModel, BudgetPeriod, ExpenseCategoryLabel } from '../types'
 import { useFinance } from '../lib/FinanceContext'
@@ -521,7 +522,7 @@ export function MonthlyBudget() {
             {budgetModel === 'fixed' ? (
               <label className="span-2">
                 Nominal anggaran
-                <input name="plannedAmount" type="number" min="0" step="1" required value={fixedAmount} onChange={(event) => setFixedAmount(Number(event.target.value))} />
+                <MoneyInput name="plannedAmount" min="0" required value={fixedAmount || ''} onValueChange={setFixedAmount} />
               </label>
             ) : (
               <div className="budget-line-editor span-2">
@@ -534,7 +535,7 @@ export function MonthlyBudget() {
                   <div className="budget-line-row" key={index}>
                     <input required minLength={2} maxLength={80} value={item.name} onChange={(event) => updateLineItem(index, 'name', event.target.value)} placeholder="Contoh: Galon" />
                     <input required type="number" min="1" step="1" inputMode="numeric" value={item.quantity} onWheel={(event) => event.currentTarget.blur()} onChange={(event) => updateLineItem(index, 'quantity', event.target.value)} />
-                    <input required type="number" min="0" step="1" value={item.unitPrice} onChange={(event) => updateLineItem(index, 'unitPrice', event.target.value)} />
+                    <MoneyInput required name={`lineItemPrice-${index}`} min="0" value={item.unitPrice || ''} onValueChange={(value) => updateLineItem(index, 'unitPrice', String(value))} />
                     <strong>{formatIDR(item.quantity * item.unitPrice)}</strong>
                     <button
                       type="button"

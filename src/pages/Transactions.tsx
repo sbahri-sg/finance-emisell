@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ArrowDownLeft, ArrowUpRight, BanknoteArrowDown, Check, Download, Filter, Pencil, Plus, Search, Trash2 } from 'lucide-react'
 import { Badge, Button, Card, ConfirmActionModal, Modal, PageHeader } from '../components/ui'
+import { MoneyInput } from '../components/MoneyInput'
 import { useFinance } from '../lib/FinanceContext'
 import { formatDate, formatIDR } from '../lib/format'
 import type { BudgetCategory, ExpenseCategoryLabel, Transaction } from '../types'
@@ -434,7 +435,7 @@ export function Transactions() {
             </label>
             <label>
               Nominal
-              <input name="amount" type="number" min="1" max="1000000000000000" step="1" required defaultValue={editing ? Math.abs(editing.amount) : undefined} placeholder="0" />
+              <MoneyInput name="amount" min="1" max="1000000000000000" required defaultValue={editing ? Math.abs(editing.amount) : undefined} />
             </label>
             <label>
               Masuk ke rekening
@@ -512,7 +513,7 @@ export function Transactions() {
             </label>
             <label>
               Nominal
-              <input name="amount" type="number" min="1" step="1" required readOnly={selectedExpenseBudget?.budgetModel === 'multi_item'} value={expenseAmount || ''} onChange={(event) => setExpenseAmount(Number(event.target.value))} />
+              <MoneyInput name="amount" min="1" required readOnly={selectedExpenseBudget?.budgetModel === 'multi_item'} value={expenseAmount || ''} onValueChange={setExpenseAmount} />
             </label>
             <label className="span-2">
               Rekening
@@ -552,7 +553,7 @@ export function Transactions() {
                   return <div className={`budget-cart-row ${cartItem ? 'selected' : ''} ${available <= 0 ? 'fulfilled' : ''}`} key={itemId || item.name}>
                     <label className="budget-cart-check"><input type="checkbox" checked={Boolean(cartItem)} disabled={!itemId || available <= 0} onChange={(event) => toggleBudgetItem(itemId, event.target.checked)}/><span><strong>{item.name}</strong><small>{editing ? `${Math.max(0,(item.purchasedQuantity || 0)-oldQuantity)} dibeli di transaksi lain · maks ${Math.max(0,available)}` : `${item.purchasedQuantity || 0} dibeli · sisa ${Math.max(0,available)}`}</small></span></label>
                     <input aria-label={`Qty ${item.name}`} type="number" min="1" max={available} step="1" disabled={!cartItem} value={cartItem?.quantity || ''} onChange={(event) => updateBudgetCartItem(itemId, 'quantity', Number(event.target.value))}/>
-                    <input aria-label={`Harga ${item.name}`} type="number" min="0" step="1" disabled={!cartItem} value={cartItem?.unitPrice ?? ''} onChange={(event) => updateBudgetCartItem(itemId, 'unitPrice', Number(event.target.value))}/>
+                    <MoneyInput aria-label={`Harga ${item.name}`} name={`budgetItemPrice-${itemId}`} min="0" disabled={!cartItem} value={cartItem?.unitPrice ?? ''} onValueChange={(value) => updateBudgetCartItem(itemId, 'unitPrice', value)}/>
                     <strong>{formatIDR(cartItem ? cartItem.quantity * cartItem.unitPrice : 0)}</strong>
                   </div>
                 })}

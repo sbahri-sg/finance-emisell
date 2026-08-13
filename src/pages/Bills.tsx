@@ -3,6 +3,7 @@ import { AlertTriangle, BellRing, CalendarDays, Check, Clock3, CreditCard, Plus,
 import { useFinance } from '../lib/FinanceContext'
 import { formatCurrency, formatDate, formatIDR, initials } from '../lib/format'
 import { Badge, Button, Card, Modal, PageHeader } from '../components/ui'
+import { MoneyInput } from '../components/MoneyInput'
 import type { Bill, BudgetCategory } from '../types'
 
 const today = new Date().toISOString().slice(0, 10)
@@ -341,7 +342,7 @@ export function Bills() {
             </label>
             <label>
               Harga satuan
-              <input name="unitPrice" type="number" min="1" step="1" required value={billUnitPrice || ''} onChange={(event) => setBillUnitPrice(Number(event.target.value))} />
+              <MoneyInput name="unitPrice" min="1" required value={billUnitPrice || ''} onValueChange={setBillUnitPrice} />
             </label>
             <label>
               Jumlah
@@ -421,7 +422,7 @@ export function Bills() {
             </label>
             <label>
               Nominal aktual
-              <input name="amount" type="number" min="1" step="1" defaultValue={payment.amount} required />
+              <MoneyInput name="amount" min="1" defaultValue={payment.amount} required />
             </label>
             <label className="span-2">
               Sumber pembayaran
