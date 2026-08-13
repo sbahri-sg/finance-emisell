@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { X } from 'lucide-react'
+import { AlertTriangle, Trash2, X } from 'lucide-react'
 
 export function Card({ children, className = '' }: { children: ReactNode; className?: string }) {
   return <section className={`card ${className}`}>{children}</section>
@@ -62,6 +62,53 @@ export function Modal({ title, description, onClose, children }: { title: string
         {children}
       </section>
     </div>
+  )
+}
+
+export function ConfirmActionModal({
+  open,
+  title,
+  description = 'Konfirmasi diperlukan sebelum melanjutkan',
+  subject,
+  detail,
+  note,
+  confirmLabel,
+  busy = false,
+  error = '',
+  tone = 'danger',
+  onClose,
+  onConfirm,
+}: {
+  open: boolean
+  title: string
+  description?: string
+  subject: string
+  detail: string
+  note: string
+  confirmLabel: string
+  busy?: boolean
+  error?: string
+  tone?: 'danger' | 'warning'
+  onClose: () => void
+  onConfirm: () => void
+}) {
+  if (!open) return null
+  const Icon = tone === 'danger' ? Trash2 : AlertTriangle
+  return (
+    <Modal title={title} description={description} onClose={() => !busy && onClose()}>
+      {error && <div className="auth-error delete-confirmation-error">{error}</div>}
+      <div className={`delete-confirmation ${tone === 'warning' ? 'warning' : ''}`}>
+        <span className="delete-confirmation-icon"><Icon size={25} /></span>
+        <div><strong>{subject}</strong><p>{detail}</p></div>
+      </div>
+      <div className="delete-confirmation-note"><AlertTriangle size={17} /><span>{note}</span></div>
+      <div className="modal-actions delete-confirmation-actions">
+        <Button variant="secondary" onClick={onClose} disabled={busy}>Batal</Button>
+        <Button variant={tone === 'danger' ? 'danger' : 'primary'} onClick={onConfirm} disabled={busy}>
+          <Icon size={15} /> {busy ? 'Memproses…' : confirmLabel}
+        </Button>
+      </div>
+    </Modal>
   )
 }
 

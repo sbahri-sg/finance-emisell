@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { AlertTriangle, ArrowDownLeft, ArrowUpRight, Pencil, Plus, Trash2, TrendingDown } from 'lucide-react'
 import { useFinance } from '../lib/FinanceContext'
 import { formatDate, formatIDR } from '../lib/format'
-import { Badge, Button, Card, Modal, PageHeader } from '../components/ui'
+import { Badge, Button, Card, ConfirmActionModal, Modal, PageHeader } from '../components/ui'
 import type { Account, BudgetCategory, DepositAccount } from '../types'
 
 const today = new Date().toISOString().slice(0, 10)
@@ -16,6 +16,7 @@ export function Deposits() {
     } | null>(null),
     [createDeposit, setCreateDeposit] = useState(false),
     [editingDeposit, setEditingDeposit] = useState<Account | null>(null),
+    [deleteTarget, setDeleteTarget] = useState<Account | null>(null),
     [saving, setSaving] = useState(false),
     [error, setError] = useState(''),
     [budgetCategories, setBudgetCategories] = useState<BudgetCategory[]>([])
@@ -153,15 +154,16 @@ export function Deposits() {
       setSaving(false)
     }
   }
-  async function removeDeposit(account: Account | null = editingDeposit) {
-    if (!account || !window.confirm(`Hapus deposit ${account.name}? Deposit hanya dapat dihapus jika saldonya nol.`)) return
+  async function removeDeposit() {
+    if (!deleteTarget) return
     setSaving(true)
     setError('')
     try {
-      const response = await fetch(`/api/accounts/${account.id}`, { method: 'DELETE', credentials: 'include' })
+      const response = await fetch(`/api/accounts/${deleteTarget.id}`, { method: 'DELETE', credentials: 'include' })
       const result = (await response.json().catch(() => ({}))) as { error?: string }
       if (!response.ok) throw new Error(result.error || 'Deposit belum dapat dihapus')
       await refresh()
+      setDeleteTarget(null)
       setEditingDeposit(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Terjadi kesalahan')
@@ -272,7 +274,7 @@ export function Deposits() {
                   >
                     <Pencil size={15} /> Edit
                   </Button>
-                  <Button variant="secondary" onClick={() => void removeDeposit(accounts.find((item) => item.id === deposit.id) || null)}>
+                  <Button variant="secondary" onClick={() => { setError(''); setDeleteTarget(accounts.find((item) => item.id === deposit.id) || null) }}>
                     <Trash2 size={15} /> Hapus
                   </Button>
                   <Button
@@ -381,7 +383,7 @@ export function Deposits() {
               <input className="color-input" name="color" type="color" defaultValue={editingDeposit.color} />
             </label>
             <div className="modal-actions span-2">
-              <Button variant="danger" onClick={() => void removeDeposit()} disabled={saving}>
+              <Button variant="danger" onClick={() => { setError(''); setDeleteTarget(editingDeposit) }} disabled={saving}>
                 <Trash2 size={15} /> Hapus
               </Button>
               <Button variant="secondary" onClick={() => setEditingDeposit(null)}>
@@ -541,6 +543,18 @@ export function Deposits() {
           </form>
         </Modal>
       )}
+      <ConfirmActionModal
+        open={Boolean(deleteTarget)}
+        title="Hapus akun deposit?"
+        subject={deleteTarget?.name || ''}
+        detail={deleteTarget ? `${deleteTarget.institution || 'Platform deposit'} · saldo ${formatIDR(deleteTarget.balance)}` : ''}
+        note="Akun deposit hanya dapat dihapus jika saldonya nol dan tidak memiliki transaksi efektif. Aktivitas lama tetap terlindungi dalam audit."
+        confirmLabel="Hapus deposit"
+        busy={saving}
+        error={deleteTarget ? error : ''}
+        onClose={() => { setDeleteTarget(null); setError('') }}
+        onConfirm={() => void removeDeposit()}
+      />
     </>
   )
 }

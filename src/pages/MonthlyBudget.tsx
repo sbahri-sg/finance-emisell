@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ArrowDownToLine, CheckCircle2, ChevronDown, Copy, Edit3, FolderPlus, PiggyBank, Plus, ReceiptText, Trash2, WalletCards } from 'lucide-react'
-import { Badge, Button, Card, Modal, PageHeader } from '../components/ui'
+import { Badge, Button, Card, ConfirmActionModal, Modal, PageHeader } from '../components/ui'
 import { formatIDR } from '../lib/format'
 import type { BudgetCategory, BudgetCategoryType, BudgetLineItem, BudgetModel, BudgetPeriod, ExpenseCategoryLabel } from '../types'
 import { useFinance } from '../lib/FinanceContext'
@@ -50,6 +50,7 @@ export function MonthlyBudget() {
   const [fixedAmount, setFixedAmount] = useState(0)
   const [expenseCategories, setExpenseCategories] = useState<ExpenseCategoryLabel[]>([])
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null)
+  const [closeConfirmation, setCloseConfirmation] = useState(false)
 
   const loadBudget = useCallback(async () => {
     setLoading(true)
@@ -141,11 +142,16 @@ export function MonthlyBudget() {
   async function changeStatus() {
     if (!data.budget) return
     const next = data.budget.status === 'closed' ? 'active' : 'closed'
-    if (next === 'closed' && !window.confirm('Tutup RAB bulan ini? Transaksi pada periode tertutup tidak dapat ditambah atau diubah.')) return
-    await request(`/api/budgets/${data.budget.id}/status`, {
+    if (next === 'closed') { setError(''); setCloseConfirmation(true); return }
+    await updateStatus(next)
+  }
+  async function updateStatus(status: 'active' | 'closed') {
+    if (!data.budget) return
+    const ok = await request(`/api/budgets/${data.budget.id}/status`, {
       method: 'POST',
-      body: JSON.stringify({ status: next }),
+      body: JSON.stringify({ status }),
     })
+    if (ok) setCloseConfirmation(false)
   }
   function openCategory(category: EditingCategory) {
     setEditing(category)
@@ -564,35 +570,8 @@ export function MonthlyBudget() {
         </Modal>
       )}
 
-      {deleteTarget && (
-        <Modal
-          title={deleteTarget.type === 'category' ? 'Hapus pos anggaran?' : 'Hapus rincian item?'}
-          description="Konfirmasi diperlukan sebelum data dihapus"
-          onClose={() => !saving && setDeleteTarget(null)}
-        >
-          <div className="delete-confirmation">
-            <span className="delete-confirmation-icon"><Trash2 size={25} /></span>
-            <div>
-              <strong>{deleteTarget.type === 'category' ? deleteTarget.category.name : deleteTarget.item.name}</strong>
-              <p>
-                {deleteTarget.type === 'category'
-                  ? `Pos ini akan dikeluarkan dari RAB ${monthLabel(month)}${deleteTarget.category.lineItems.length ? ` beserta ${deleteTarget.category.lineItems.length} rincian item` : ''}. Total anggaran akan dihitung ulang otomatis.`
-                  : `Item ini akan dihapus dari pos ${deleteTarget.category.name}. Total pos dan total RAB akan dihitung ulang otomatis.`}
-              </p>
-            </div>
-          </div>
-          <div className="delete-confirmation-note">
-            <AlertTriangle size={17} />
-            <span>{deleteTarget.type === 'category' ? 'Histori transaksi yang sudah dibatalkan tetap disimpan untuk audit.' : 'Pastikan item ini memang tidak lagi diperlukan dalam rencana belanja.'}</span>
-          </div>
-          <div className="modal-actions delete-confirmation-actions">
-            <Button variant="secondary" onClick={() => setDeleteTarget(null)} disabled={saving}>Batal</Button>
-            <Button variant="danger" onClick={() => void confirmDelete()} disabled={saving}>
-              <Trash2 size={15} /> {saving ? 'Menghapus…' : deleteTarget.type === 'category' ? 'Hapus pos' : 'Hapus item'}
-            </Button>
-          </div>
-        </Modal>
-      )}
+      <ConfirmActionModal open={Boolean(deleteTarget)} title={deleteTarget?.type === 'category' ? 'Hapus pos anggaran?' : 'Hapus rincian item?'} subject={deleteTarget?.type === 'category' ? deleteTarget.category.name : deleteTarget?.item.name || ''} detail={deleteTarget?.type === 'category' ? `Pos akan dikeluarkan dari RAB ${monthLabel(month)}${deleteTarget.category.lineItems.length ? ` beserta ${deleteTarget.category.lineItems.length} rincian item` : ''}. Total anggaran dihitung ulang otomatis.` : deleteTarget ? `Item akan dihapus dari pos ${deleteTarget.category.name}. Total pos dan RAB dihitung ulang otomatis.` : ''} note={deleteTarget?.type === 'category' ? 'Histori transaksi yang sudah dibatalkan tetap disimpan untuk audit.' : 'Pastikan item ini memang tidak lagi diperlukan dalam rencana belanja.'} confirmLabel={deleteTarget?.type === 'category' ? 'Hapus pos' : 'Hapus item'} busy={saving} error={deleteTarget ? error : ''} onClose={() => { setDeleteTarget(null); setError('') }} onConfirm={() => void confirmDelete()}/>
+      <ConfirmActionModal open={closeConfirmation} title="Tutup periode RAB?" subject={`RAB ${monthLabel(month)}`} detail={`Anggaran ${formatIDR(summary.planned)} dengan realisasi ${formatIDR(summary.actual)} akan ditutup.`} note="Transaksi pada periode tertutup tidak dapat ditambah atau diubah sampai periode dibuka kembali." confirmLabel="Tutup periode" busy={saving} error={closeConfirmation ? error : ''} tone="warning" onClose={() => { setCloseConfirmation(false); setError('') }} onConfirm={() => void updateStatus('closed')}/>
     </>
   )
 }

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { CheckCircle2, CircleAlert, Landmark, MoreHorizontal, Plus, RefreshCw, Wallet } from 'lucide-react'
 import { useFinance } from '../lib/FinanceContext'
 import { formatCurrency, formatDate, formatIDR } from '../lib/format'
-import { Badge, Button, Card, Modal, PageHeader } from '../components/ui'
+import { Badge, Button, Card, ConfirmActionModal, Modal, PageHeader } from '../components/ui'
 import type { Account } from '../types'
 
 const today = new Date().toISOString().slice(0, 10)
@@ -10,6 +10,7 @@ export function Accounts() {
   const { accounts, refresh, user } = useFinance(),
     [addModal, setAddModal] = useState(false),
     [editing, setEditing] = useState<Account | null>(null),
+    [deleteTarget, setDeleteTarget] = useState<Account | null>(null),
     [reconcile, setReconcile] = useState<Account | null>(null),
     [saving, setSaving] = useState(false),
     [error, setError] = useState('')
@@ -59,9 +60,9 @@ export function Accounts() {
     if (ok) setEditing(null)
   }
   async function removeAccount() {
-    if (!editing || !window.confirm(`Hapus ${editing.name}? Histori transaksi tetap disimpan. Rekening hanya dapat dihapus jika saldonya nol.`)) return
-    const ok = await api(`/api/accounts/${editing.id}`, {}, 'DELETE')
-    if (ok) setEditing(null)
+    if (!deleteTarget) return
+    const ok = await api(`/api/accounts/${deleteTarget.id}`, {}, 'DELETE')
+    if (ok) { setDeleteTarget(null); setEditing(null) }
   }
   async function addAccount(formData: FormData) {
     const ok = await api('/api/accounts', {
@@ -338,7 +339,7 @@ export function Accounts() {
               <input className="color-input" name="color" type="color" defaultValue={editing.color} />
             </label>
             <div className="modal-actions span-2">
-              <Button variant="danger" onClick={removeAccount} disabled={saving}>
+              <Button variant="danger" onClick={() => { setError(''); setDeleteTarget(editing) }} disabled={saving}>
                 Hapus
               </Button>
               <Button variant="secondary" onClick={() => setEditing(null)}>
@@ -351,6 +352,18 @@ export function Accounts() {
           </form>
         </Modal>
       )}
+      <ConfirmActionModal
+        open={Boolean(deleteTarget)}
+        title="Hapus rekening?"
+        subject={deleteTarget?.name || ''}
+        detail={deleteTarget ? `${deleteTarget.institution || 'Kas perusahaan'} · saldo ${formatIDR(deleteTarget.balance)}` : ''}
+        note="Rekening hanya dapat dihapus jika saldonya nol dan tidak memiliki transaksi efektif. Histori audit tidak ikut dihapus."
+        confirmLabel="Hapus rekening"
+        busy={saving}
+        error={deleteTarget ? error : ''}
+        onClose={() => { setDeleteTarget(null); setError('') }}
+        onConfirm={() => void removeAccount()}
+      />
     </>
   )
 }

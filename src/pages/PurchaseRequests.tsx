@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Check, CheckCircle2, Clock3, CreditCard, PackageCheck, Plus, Search, ShoppingBag, ShoppingCart, XCircle } from 'lucide-react'
-import { Badge, Button, Card, Modal, PageHeader } from '../components/ui'
+import { Badge, Button, Card, ConfirmActionModal, Modal, PageHeader } from '../components/ui'
 import { useFinance } from '../lib/FinanceContext'
 import { formatDate, formatIDR } from '../lib/format'
 import type { BudgetCategory, PurchaseRequest, PurchaseRequestStatus } from '../types'
@@ -30,7 +30,8 @@ export function PurchaseRequests() {
     [filter, setFilter] = useState<'all' | PurchaseRequestStatus>('all')
   const [createModal, setCreateModal] = useState(false),
     [approval, setApproval] = useState<PurchaseRequest | null>(null),
-    [payment, setPayment] = useState<PurchaseRequest | null>(null)
+    [payment, setPayment] = useState<PurchaseRequest | null>(null),
+    [rejectionTarget, setRejectionTarget] = useState<PurchaseRequest | null>(null)
   const [budgetCategories, setBudgetCategories] = useState<BudgetCategory[]>([]),
     [saving, setSaving] = useState(false),
     [error, setError] = useState('')
@@ -110,12 +111,13 @@ export function PurchaseRequests() {
     })
     if (ok) setApproval(null)
   }
-  async function rejectRequest(request: PurchaseRequest) {
-    if (window.confirm(`Tolak pengajuan ${request.requestNumber}?`))
-      await api(`/api/purchase-requests/${request.id}/transition`, {
-        status: 'rejected',
-        note: 'Ditolak melalui daftar pengajuan',
-      })
+  async function rejectRequest() {
+    if (!rejectionTarget) return
+    const ok = await api(`/api/purchase-requests/${rejectionTarget.id}/transition`, {
+      status: 'rejected',
+      note: 'Ditolak melalui daftar pengajuan',
+    })
+    if (ok) setRejectionTarget(null)
   }
   async function payRequest(formData: FormData) {
     if (!payment) return
@@ -295,7 +297,7 @@ export function PurchaseRequests() {
                           >
                             <Check size={13} /> Setujui
                           </button>
-                          <button className="reject" onClick={() => void rejectRequest(request)} aria-label={`Tolak ${request.title}`}>
+                          <button className="reject" onClick={() => { setError(''); setRejectionTarget(request) }} aria-label={`Tolak ${request.title}`}>
                             <XCircle size={14} />
                           </button>
                         </>
@@ -504,6 +506,18 @@ export function PurchaseRequests() {
           </form>
         </Modal>
       )}
+      <ConfirmActionModal
+        open={Boolean(rejectionTarget)}
+        title="Tolak pengajuan belanja?"
+        subject={rejectionTarget ? `${rejectionTarget.requestNumber} · ${rejectionTarget.title}` : ''}
+        detail={rejectionTarget ? `${rejectionTarget.requestedBy} · ${formatIDR(rejectionTarget.amount)}` : ''}
+        note="Pengajuan akan berstatus Ditolak dan tidak dapat dilanjutkan ke pembayaran. Saldo rekening tidak berubah."
+        confirmLabel="Tolak pengajuan"
+        busy={saving}
+        error={rejectionTarget ? error : ''}
+        onClose={() => { setRejectionTarget(null); setError('') }}
+        onConfirm={() => void rejectRequest()}
+      />
     </>
   )
 }

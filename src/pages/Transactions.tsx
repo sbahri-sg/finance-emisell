@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ArrowDownLeft, ArrowUpRight, BanknoteArrowDown, Check, Download, Filter, Pencil, Plus, Search, Trash2 } from 'lucide-react'
-import { Badge, Button, Card, Modal, PageHeader } from '../components/ui'
+import { Badge, Button, Card, ConfirmActionModal, Modal, PageHeader } from '../components/ui'
 import { useFinance } from '../lib/FinanceContext'
 import { formatDate, formatIDR } from '../lib/format'
 import type { BudgetCategory, ExpenseCategoryLabel, Transaction } from '../types'
@@ -19,6 +19,7 @@ export function Transactions() {
   const [modal, setModal] = useState(false)
   const [expenseModal, setExpenseModal] = useState(false)
   const [editing, setEditing] = useState<Transaction | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Transaction | null>(null)
   const [budgetCategories, setBudgetCategories] = useState<BudgetCategory[]>([])
   const [expenseCategories, setExpenseCategories] = useState<ExpenseCategoryLabel[]>([])
   const [expenseAmount, setExpenseAmount] = useState(0)
@@ -167,15 +168,16 @@ export function Transactions() {
       setSaving(false)
     }
   }
-  async function removeTransaction(transaction: Transaction) {
-    if (!window.confirm(`Hapus ${transaction.description}? Sistem tetap menyimpan jejak koreksi untuk audit.`)) return
+  async function removeTransaction() {
+    if (!deleteTarget) return
     setSaving(true)
     setError('')
     try {
-      const response = await fetch(`/api/transactions/${transaction.id}/reverse`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transactionDate: today, reason: 'Dihapus dari daftar transaksi' }) })
+      const response = await fetch(`/api/transactions/${deleteTarget.id}/reverse`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transactionDate: today, reason: 'Dihapus dari daftar transaksi' }) })
       const body = (await response.json().catch(() => ({}))) as { error?: string }
       if (!response.ok) throw new Error(body.error || 'Transaksi belum dapat dihapus')
       await refresh()
+      setDeleteTarget(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Terjadi kesalahan')
     } finally {
@@ -375,7 +377,7 @@ export function Transactions() {
                               <Pencil size={14} />
                             </button>
                           )}
-                          <button className="reject" aria-label={`Hapus ${trx.description}`} onClick={() => void removeTransaction(trx)}>
+                          <button className="reject" aria-label={`Hapus ${trx.description}`} onClick={() => { setError(''); setDeleteTarget(trx) }}>
                             <Trash2 size={14} />
                           </button>
                         </>
@@ -613,6 +615,18 @@ export function Transactions() {
           </form>
         </Modal>
       )}
+      <ConfirmActionModal
+        open={Boolean(deleteTarget)}
+        title="Hapus transaksi?"
+        subject={deleteTarget?.description || ''}
+        detail={deleteTarget ? `${formatDate(deleteTarget.date)} · ${deleteTarget.category} · ${formatIDR(Math.abs(deleteTarget.amount))}` : ''}
+        note="Transaksi dihapus dari daftar aktif melalui jurnal pembalik. Jejak audit tetap tersimpan dan saldo dikoreksi secara otomatis."
+        confirmLabel="Hapus transaksi"
+        busy={saving}
+        error={deleteTarget ? error : ''}
+        onClose={() => { setDeleteTarget(null); setError('') }}
+        onConfirm={() => void removeTransaction()}
+      />
     </>
   )
 }
