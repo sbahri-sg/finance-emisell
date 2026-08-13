@@ -403,6 +403,43 @@ app.patch('/api/expense-categories/:id', settingsLimit, requireAuth, requireUser
   }
 })
 
+app.delete('/api/expense-categories/:id', settingsLimit, requireAuth, requireUserAdmin, async (req: AuthedRequest, res, next) => {
+  const c = await pool.connect()
+  try {
+    await c.query('begin')
+    const org = req.auth!.organizationId
+    const category = await c.query('select id,name,active from expense_categories where id=$1 and organization_id=$2 for update', [req.params.id, org])
+    if (!category.rowCount) {
+      await c.query('rollback')
+      return res.status(404).json({ error: 'Kategori tidak ditemukan' })
+    }
+    const usage = await c.query(`select
+      (select count(*)::int from transactions where expense_category_id=$1) "transactionCount",
+      (select count(*)::int from budget_categories where expense_category_id=$1) "budgetCount"`, [req.params.id])
+    if (usage.rows[0].transactionCount || usage.rows[0].budgetCount) {
+      await c.query('rollback')
+      return res.status(409).json({ error: 'Kategori sudah digunakan pada transaksi atau Pos RAB. Nonaktifkan kategori agar histori tetap aman.' })
+    }
+    if (category.rows[0].active) {
+      const remaining = await c.query('select count(*)::int count from expense_categories where organization_id=$1 and active and id<>$2', [org, req.params.id])
+      if (!remaining.rows[0].count) {
+        await c.query('rollback')
+        return res.status(409).json({ error: 'Minimal satu kategori harus tetap aktif' })
+      }
+    }
+    await c.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'expense_category',$3,'delete',$4)`, [org, req.auth!.userId, category.rows[0].id, JSON.stringify({ name: category.rows[0].name })])
+    await c.query('delete from expense_categories where id=$1 and organization_id=$2', [req.params.id, org])
+    await c.query('commit')
+    res.json({ ok: true })
+  } catch (e) {
+    await c.query('rollback')
+    if ((e as { code?: string }).code === '23503') return res.status(409).json({ error: 'Kategori sudah digunakan dan tidak dapat dihapus. Nonaktifkan kategori sebagai gantinya.' })
+    next(e)
+  } finally {
+    c.release()
+  }
+})
+
 app.patch('/api/settings/profile', settingsLimit, requireAuth, requireUserAdmin, async (req: AuthedRequest, res, next) => {
   try {
     const input = workspaceProfileInput.parse(req.body),

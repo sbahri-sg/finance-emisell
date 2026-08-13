@@ -35,12 +35,17 @@ curl -fsS -c "$cookie_file" -H 'Content-Type: application/json' -d '{"organizati
 custom_category_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"name":"Pajak & Legal","color":"#9b6f45"}' "$base/api/expense-categories" | jq -er '.id')
 curl -fsS -b "$cookie_file" -X PATCH -H 'Content-Type: application/json' -d '{"name":"Pajak & Kepatuhan","color":"#9b6f45","active":true}' "$base/api/expense-categories/$custom_category_id" | jq -e '.name=="Pajak & Kepatuhan"' >/dev/null
 curl -fsS -b "$cookie_file" "$base/api/settings" | jq -e --arg category "$custom_category_id" '([.expenseCategories[]|select(.id==$category and .name=="Pajak & Kepatuhan" and .active==true)]|length)==1' >/dev/null
+disposable_category_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"name":"Kategori Sementara","color":"#607d73"}' "$base/api/expense-categories" | jq -er '.id')
+curl -fsS -b "$cookie_file" -X DELETE "$base/api/expense-categories/$disposable_category_id" | jq -e '.ok==true' >/dev/null
+curl -fsS -b "$cookie_file" "$base/api/settings" | jq -e --arg category "$disposable_category_id" '([.expenseCategories[]|select(.id==$category)]|length)==0' >/dev/null
 account_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"name":"Bank Test","institution":"Test Bank","kind":"bank","currency":"IDR","openingBalance":10000000,"color":"#225c55"}' "$base/api/accounts" | jq -er '.id')
 deposit_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"name":"Meta Ads Test","institution":"Meta","kind":"deposit","currency":"IDR","openingBalance":0,"lowBalanceThreshold":500000,"color":"#4f78a5"}' "$base/api/accounts" | jq -er '.id')
 budget_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"month":"2026-08"}' "$base/api/budgets" | jq -er '.id')
 category_id=$(curl -fsS -b "$cookie_file" "$base/api/budgets?month=2026-08" | jq -er '.categories[]|select(.name=="Kebutuhan kantor")|.id')
 curl -fsS -b "$cookie_file" -X PATCH -H 'Content-Type: application/json' -d '{"name":"Kebutuhan kantor","expenseCategory":"Kebersihan & Perlengkapan","details":["ATK","Galon"],"budgetModel":"multi_item","lineItems":[{"name":"ATK","quantity":10,"unitPrice":300000},{"name":"Galon","quantity":20,"unitPrice":100000}],"categoryType":"variable","plannedAmount":1,"color":"#d89b50"}' "$base/api/budget-categories/$category_id" | jq -e '.ok==true' >/dev/null
 curl -fsS -b "$cookie_file" "$base/api/budgets?month=2026-08" | jq -e --arg category "$category_id" '(.categories[]|select(.id==$category)|.plannedAmount|tonumber)==5000000 and (.categories[]|select(.id==$category)|.budgetModel)=="multi_item" and ([.categories[]|select(.id==$category)|.lineItems[]]|length)==2' >/dev/null
+used_expense_category_id=$(curl -fsS -b "$cookie_file" "$base/api/settings" | jq -er '.expenseCategories[]|select(.name=="Kebersihan & Perlengkapan")|.id')
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -b "$cookie_file" -X DELETE "$base/api/expense-categories/$used_expense_category_id")" = 409 ]
 fractional_quantity_status=$(curl -sS -o /dev/null -w '%{http_code}' -b "$cookie_file" -X PATCH -H 'Content-Type: application/json' -d '{"name":"Kebutuhan kantor","expenseCategory":"Kebersihan & Perlengkapan","details":["Galon"],"budgetModel":"multi_item","lineItems":[{"name":"Galon","quantity":1.07,"unitPrice":50000}],"categoryType":"variable","plannedAmount":53500,"color":"#d89b50"}' "$base/api/budget-categories/$category_id")
 [ "$fractional_quantity_status" = 400 ]
 
