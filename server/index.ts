@@ -4,7 +4,7 @@ import helmet from 'helmet'
 import { rateLimit } from 'express-rate-limit'
 import { z } from 'zod'
 import path from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { pool, migrate } from './db.js'
 import { hashPassword, newSessionToken, tokenHash, verifyPassword } from './security.js'
 
@@ -95,6 +95,12 @@ const userAdminLimit = rateLimit({
 const settingsLimit = rateLimit({
   windowMs: 15 * 60_000,
   limit: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+})
+const importLimit = rateLimit({
+  windowMs: 15 * 60_000,
+  limit: 20,
   standardHeaders: true,
   legacyHeaders: false,
 })
@@ -1201,6 +1207,205 @@ app.post('/api/deposits/:id/usage', requireAuth, requireFinance, async (req: Aut
       res.status(201).json({ id: transaction.rows[0].id })
     } catch (e) {
       await c.query('rollback')
+      throw e
+    } finally {
+      c.release()
+    }
+  } catch (e) {
+    next(e)
+  }
+})
+
+const selowImportRow = z.object({
+  transactionDate: z.iso.date(),
+  transactionTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/),
+  note: z.string().trim().max(240).optional(),
+  amount: z.number().min(-1e15).max(1e15).refine((value) => Math.abs(value) >= 0.01, 'Nominal tidak boleh nol'),
+  budgetCategoryId: z.string().uuid().optional(),
+})
+
+function selowFingerprint(row: z.infer<typeof selowImportRow>) {
+  const note = (row.note || '').replace(/\s+/g, ' ').trim().toUpperCase()
+  return createHash('sha256')
+    .update(`${row.transactionDate}|${row.transactionTime}|${note}|${row.amount.toFixed(2)}`)
+    .digest('hex')
+}
+
+app.post('/api/deposits/:id/import-selow', importLimit, requireAuth, requireFinance, async (req: AuthedRequest, res, next) => {
+  try {
+    const input = z
+        .object({
+          sourceAccountId: z.string().uuid().optional(),
+          overrideReason: z.string().trim().max(500).optional(),
+          rows: z.array(selowImportRow).min(1).max(2000),
+        })
+        .parse(req.body),
+      org = req.auth!.organizationId,
+      c = await pool.connect()
+    try {
+      await c.query('begin')
+      const deposit = await c.query(
+        `select id,name,currency,opening_balance from accounts where id=$1 and organization_id=$2 and kind='deposit' and active for update`,
+        [req.params.id, org],
+      )
+      if (!deposit.rowCount) {
+        await c.query('rollback')
+        return res.status(404).json({ error: 'VCC tidak ditemukan' })
+      }
+
+      const prepared = input.rows.map((row) => ({ ...row, fingerprint: selowFingerprint(row) })),
+        fingerprints = prepared.map((row) => row.fingerprint),
+        imported = await c.query(
+          `select fingerprint from deposit_import_entries where organization_id=$1 and deposit_account_id=$2 and source='selow' and fingerprint=any($3::char(64)[])`,
+          [org, deposit.rows[0].id, fingerprints],
+        ),
+        known = new Set(imported.rows.map((row) => String(row.fingerprint).trim())),
+        pending: typeof prepared = [],
+        counts = { imported: 0, matched: 0, duplicates: 0, topups: 0, debits: 0 }
+
+      for (const row of prepared) {
+        if (known.has(row.fingerprint)) {
+          counts.duplicates += 1
+          continue
+        }
+        const kind = row.amount > 0 ? 'deposit_topup' : 'deposit_usage',
+          exact = await c.query(
+            `select t.id from transactions t
+             join transaction_entries e on e.transaction_id=t.id and e.account_id=$2
+             where t.organization_id=$1 and t.kind=$3 and t.status='posted'
+               and t.transaction_date=$4::date and e.amount=$5::numeric
+               and not exists(select 1 from deposit_import_entries di where di.transaction_id=t.id)
+               and not exists(select 1 from transactions r where r.reversal_of=t.id and r.status='posted')
+             order by t.created_at limit 1 for update of t`,
+            [org, deposit.rows[0].id, kind, row.transactionDate, row.amount],
+          )
+        if (exact.rowCount) {
+          await c.query(
+            `insert into deposit_import_entries(organization_id,deposit_account_id,transaction_id,source,fingerprint,occurred_at,raw_note,raw_amount,created_by)
+             values($1,$2,$3,'selow',$4,$5::timestamp,$6,$7,$8)`,
+            [org, deposit.rows[0].id, exact.rows[0].id, row.fingerprint, `${row.transactionDate} ${row.transactionTime}`, row.note || null, row.amount, req.auth!.userId],
+          )
+          known.add(row.fingerprint)
+          counts.matched += 1
+          continue
+        }
+        pending.push(row)
+        known.add(row.fingerprint)
+      }
+
+      const topupTotal = pending.filter((row) => row.amount > 0).reduce((sum, row) => sum + row.amount, 0),
+        debitTotal = pending.filter((row) => row.amount < 0).reduce((sum, row) => sum + Math.abs(row.amount), 0)
+      let source: { id: string; name: string; opening_balance: string | number } | null = null
+      if (topupTotal > 0) {
+        if (!input.sourceAccountId) {
+          await c.query('rollback')
+          return res.status(400).json({ error: 'Pilih rekening sumber untuk top-up yang ditemukan pada file Selow.id' })
+        }
+        const sourceResult = await c.query(
+          `select id,name,currency,opening_balance from accounts where id=$1 and organization_id=$2 and kind in('bank','cash','ewallet') and active for update`,
+          [input.sourceAccountId, org],
+        )
+        if (!sourceResult.rowCount || sourceResult.rows[0].currency !== deposit.rows[0].currency) {
+          await c.query('rollback')
+          return res.status(409).json({ error: 'Rekening sumber top-up tidak valid atau mata uangnya berbeda' })
+        }
+        const currentSource = sourceResult.rows[0] as { id: string; name: string; opening_balance: string | number }
+        source = currentSource
+        const sourceEntries = await c.query(
+            `select coalesce(sum(case when t.status='posted' then e.amount else 0 end),0)::numeric amount from transaction_entries e join transactions t on t.id=e.transaction_id where e.account_id=$1`,
+            [currentSource.id],
+          ),
+          sourceBalance = Number(currentSource.opening_balance) + Number(sourceEntries.rows[0].amount)
+        if (sourceBalance < topupTotal) {
+          await c.query('rollback')
+          return res.status(409).json({ error: `Saldo ${currentSource.name} tidak cukup untuk total top-up ${topupTotal.toLocaleString('id-ID')}` })
+        }
+      }
+
+      const depositEntries = await c.query(
+          `select coalesce(sum(case when t.status='posted' then e.amount else 0 end),0)::numeric amount from transaction_entries e join transactions t on t.id=e.transaction_id where e.account_id=$1`,
+          [deposit.rows[0].id],
+        ),
+        depositBalance = Number(deposit.rows[0].opening_balance) + Number(depositEntries.rows[0].amount)
+      if (depositBalance + topupTotal < debitTotal) {
+        await c.query('rollback')
+        return res.status(409).json({ error: 'Saldo VCC tidak cukup untuk seluruh debit baru pada file Selow.id' })
+      }
+
+      await c.query(
+        `insert into accounts(organization_id,name,kind,currency,color) values($1,'Pengeluaran','clearing',$2,'#d89b50') on conflict(organization_id,name) do nothing`,
+        [org, deposit.rows[0].currency],
+      )
+      const expenseAccount = await c.query(
+        `select id from accounts where organization_id=$1 and name='Pengeluaran' and kind='clearing' and active`,
+        [org],
+      )
+
+      for (const row of pending) {
+        let transactionId: string
+        if (row.amount > 0) {
+          const transaction = await c.query(
+            `insert into transactions(organization_id,transaction_date,kind,status,description,category,reference,created_by,posted_by,posted_at)
+             values($1,$2::date,'deposit_topup','posted',$3,'Top-up deposit',$4,$5,$5,now()) returning id`,
+            [org, row.transactionDate, `Top-up ${deposit.rows[0].name} — Selow.id`, `SELOW-${row.fingerprint.slice(0, 12).toUpperCase()}`, req.auth!.userId],
+          )
+          transactionId = transaction.rows[0].id
+          await c.query(
+            `insert into transaction_entries(transaction_id,account_id,amount) values($1,$2,$3),($1,$4,$5)`,
+            [transactionId, source!.id, -row.amount, deposit.rows[0].id, row.amount],
+          )
+          counts.topups += 1
+        } else {
+          if (!row.budgetCategoryId) {
+            await c.query('rollback')
+            return res.status(400).json({ error: `Pilih RAB untuk transaksi ${row.note || row.transactionDate}` })
+          }
+          const amount = Math.abs(row.amount),
+            budgetCheck = await assertBudgetAvailable(c, org, row.budgetCategoryId, amount, undefined, req.auth!.role, input.overrideReason),
+            budgetCategory = await c.query(
+              `select ec.id "expenseCategoryId",ec.name "expenseCategory" from budget_categories bc
+               join budget_periods bp on bp.id=bc.budget_period_id
+               join expense_categories ec on ec.id=bc.expense_category_id
+               where bc.id=$1 and bp.organization_id=$2 and bp.month=date_trunc('month',$3::date)::date
+                 and bc.archived_at is null and ec.active`,
+              [row.budgetCategoryId, org, row.transactionDate],
+            )
+          if (!budgetCategory.rowCount) {
+            await c.query('rollback')
+            return res.status(409).json({ error: `RAB untuk transaksi ${row.transactionDate} tidak aktif atau berbeda periode` })
+          }
+          const transaction = await c.query(
+            `insert into transactions(organization_id,transaction_date,kind,status,description,category,expense_category_id,reference,budget_category_id,created_by,posted_by,posted_at)
+             values($1,$2::date,'deposit_usage','posted',$3,$4,$5,$6,$7,$8,$8,now()) returning id`,
+            [org, row.transactionDate, (row.note || 'Debit VCC Selow.id').slice(0, 240), budgetCategory.rows[0].expenseCategory, budgetCategory.rows[0].expenseCategoryId, `SELOW-${row.fingerprint.slice(0, 12).toUpperCase()}`, row.budgetCategoryId, req.auth!.userId],
+          )
+          transactionId = transaction.rows[0].id
+          await c.query(
+            `insert into transaction_entries(transaction_id,account_id,amount) values($1,$2,$3),($1,$4,$5)`,
+            [transactionId, deposit.rows[0].id, -amount, expenseAccount.rows[0].id, amount],
+          )
+          await c.query(
+            `insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'transaction',$3,'deposit_usage_import',$4)`,
+            [org, req.auth!.userId, transactionId, JSON.stringify({ depositAccountId: deposit.rows[0].id, amount, budgetCheck, overrideReason: input.overrideReason || null })],
+          )
+          counts.debits += 1
+        }
+        await c.query(
+          `insert into deposit_import_entries(organization_id,deposit_account_id,transaction_id,source,fingerprint,occurred_at,raw_note,raw_amount,created_by)
+           values($1,$2,$3,'selow',$4,$5::timestamp,$6,$7,$8)`,
+          [org, deposit.rows[0].id, transactionId, row.fingerprint, `${row.transactionDate} ${row.transactionTime}`, row.note || null, row.amount, req.auth!.userId],
+        )
+        counts.imported += 1
+      }
+      await c.query(
+        `insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'account',$3,'import_selow',$4)`,
+        [org, req.auth!.userId, deposit.rows[0].id, JSON.stringify({ ...counts, rows: input.rows.length })],
+      )
+      await c.query('commit')
+      res.status(201).json(counts)
+    } catch (e) {
+      await c.query('rollback')
+      if ((e as { code?: string }).code === '23505') return res.status(409).json({ error: 'File atau transaksi Selow.id ini sudah pernah diimpor' })
       throw e
     } finally {
       c.release()

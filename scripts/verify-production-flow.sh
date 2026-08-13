@@ -114,6 +114,19 @@ curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"statementD
 deposit_entries_after_reconcile=$(docker compose exec -T postgres sh -lc 'psql -U "$POSTGRES_USER" -d emisell_finance_test -Atc "select count(*) from transaction_entries"')
 [ "$deposit_entries_before_reconcile" = "$deposit_entries_after_reconcile" ]
 
+import_source_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"name":"Import Source Test","institution":"Test Bank","kind":"bank","currency":"IDR","openingBalance":1000000,"color":"#225c55"}' "$base/api/accounts" | jq -er '.id')
+import_deposit_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"name":"Import VCC Test","institution":"Selow.id","kind":"deposit","maskedNumber":"•••• 7788","currency":"IDR","openingBalance":0,"lowBalanceThreshold":0,"color":"#4f78a5"}' "$base/api/accounts" | jq -er '.id')
+curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d "$(jq -nc --arg source "$import_source_id" '{transactionDate:"2026-08-12",sourceAccountId:$source,amount:100000}')" "$base/api/deposits/$import_deposit_id/topup" | jq -er '.id' >/dev/null
+curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d "$(jq -nc --arg category "$category_id" '{transactionDate:"2026-08-12",amount:100000,description:"FACEBK manual match",budgetCategoryId:$category}')" "$base/api/deposits/$import_deposit_id/usage" | jq -er '.id' >/dev/null
+selow_import_payload=$(jq -nc --arg source "$import_source_id" --arg category "$category_id" '{sourceAccountId:$source,rows:[{transactionDate:"2026-08-12",transactionTime:"17:00:00",note:"Top-up manual",amount:100000},{transactionDate:"2026-08-12",transactionTime:"18:00:00",note:"FACEBK *MATCH Dublin IE",amount:-100000,budgetCategoryId:$category},{transactionDate:"2026-08-13",transactionTime:"10:00:00",amount:200000},{transactionDate:"2026-08-13",transactionTime:"11:00:00",note:"FACEBK *NEW Dublin IE",amount:-200000,budgetCategoryId:$category}]}')
+curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d "$selow_import_payload" "$base/api/deposits/$import_deposit_id/import-selow" | jq -e '.imported==2 and .matched==2 and .duplicates==0 and .topups==1 and .debits==1' >/dev/null
+curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d "$selow_import_payload" "$base/api/deposits/$import_deposit_id/import-selow" | jq -e '.imported==0 and .matched==0 and .duplicates==4' >/dev/null
+curl -fsS -b "$cookie_file" "$base/api/bootstrap" | jq -e --arg deposit "$import_deposit_id" '(.accounts[]|select(.id==$deposit)|.balance|tonumber)==0' >/dev/null
+for imported_transaction_id in $(curl -fsS -b "$cookie_file" "$base/api/bootstrap" | jq -r --arg deposit "$import_deposit_id" '.transactions[]|select(.accountId==$deposit or (.description|contains("Import VCC Test")))|.id'); do
+  curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"transactionDate":"2026-08-13","reason":"Bersihkan transaksi uji import Selow"}' "$base/api/transactions/$imported_transaction_id/reverse" | jq -er '.id' >/dev/null
+done
+curl -fsS -b "$cookie_file" -X DELETE "$base/api/accounts/$import_deposit_id" | jq -e '.ok==true' >/dev/null
+
 bill_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"vendor":"Cloud Test","description":"Server bulanan","dueDate":"2026-08-15","unitPrice":50000,"quantity":2,"paymentMethod":"transfer","currency":"IDR","recurrence":"monthly","owner":"IT","autoRenew":true,"reminderDays":[14,7,1]}' "$base/api/bills" | jq -er '.id')
 bill_payload=$(jq -nc --arg account "$account_id" --arg category "$category_id" '{transactionDate:"2026-08-11",accountId:$account,amount:100000,reference:"BILL-TEST-001",budgetCategoryId:$category}')
 bill_payment=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d "$bill_payload" "$base/api/bills/$bill_id/pay")

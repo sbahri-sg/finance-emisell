@@ -1,14 +1,17 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, CheckCircle2, ClipboardCheck, Pencil, Plus, ReceiptText, Trash2, TrendingDown, WalletCards } from 'lucide-react'
+import { AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, CheckCircle2, ClipboardCheck, FileSpreadsheet, FileUp, Pencil, Plus, ReceiptText, ShieldCheck, Trash2, TrendingDown, WalletCards } from 'lucide-react'
 import { useFinance } from '../lib/FinanceContext'
 import { formatDate, formatIDR } from '../lib/format'
 import { Badge, Button, Card, ConfirmActionModal, Modal, PageHeader } from '../components/ui'
 import type { Account, BudgetCategory, DepositAccount } from '../types'
+import { readSelowWorkbook, type SelowImportRow } from '../lib/selowImport'
 
 const today = new Date().toISOString().slice(0, 10)
 const lastFour = (value: string) => value.replace(/\D/g, '').slice(-4)
 const maskedVcc = (value: string) => `•••• ${lastFour(value)}`
+type ImportBudgetCategory = BudgetCategory & { month: string }
+type SelowImportResult = { imported: number; matched: number; duplicates: number; topups: number; debits: number }
 export function Deposits() {
   const navigate = useNavigate(),
     { deposits, accounts, transactions, refresh, user } = useFinance(),
@@ -24,13 +27,24 @@ export function Deposits() {
     [deleteTarget, setDeleteTarget] = useState<Account | null>(null),
     [saving, setSaving] = useState(false),
     [error, setError] = useState(''),
-    [budgetCategories, setBudgetCategories] = useState<BudgetCategory[]>([])
+    [budgetCategories, setBudgetCategories] = useState<BudgetCategory[]>([]),
+    [importDeposit, setImportDeposit] = useState<DepositAccount | null>(null),
+    [importRows, setImportRows] = useState<SelowImportRow[]>([]),
+    [importBudgets, setImportBudgets] = useState<ImportBudgetCategory[]>([]),
+    [importMappings, setImportMappings] = useState<Record<string, string>>({}),
+    [importFileName, setImportFileName] = useState(''),
+    [importResult, setImportResult] = useState<SelowImportResult | null>(null),
+    [parsingImport, setParsingImport] = useState(false)
   const total = deposits.reduce((sum, deposit) => sum + deposit.balance, 0),
     usage = deposits.reduce((sum, deposit) => sum + deposit.monthlyUsage, 0),
     daily = deposits.reduce((sum, deposit) => sum + deposit.dailyAverage, 0),
     canManage = !!user && ['owner', 'admin', 'finance'].includes(user.role),
     sources = accounts.filter((account) => ['bank', 'cash', 'ewallet'].includes(account.kind)),
     activities = transactions.filter((transaction) => ['deposit_topup', 'deposit_usage'].includes(transaction.kind)).slice(0, 8)
+  const importGroups = Array.from(new Set(importRows.filter((row) => row.amount < 0).map((row) => `${row.transactionDate.slice(0, 7)}|${row.merchant}`))),
+    importTopupTotal = importRows.filter((row) => row.amount > 0).reduce((sum, row) => sum + row.amount, 0),
+    importDebitTotal = importRows.filter((row) => row.amount < 0).reduce((sum, row) => sum + Math.abs(row.amount), 0),
+    importReady = importRows.length > 0 && importGroups.every((group) => importMappings[group])
   useEffect(() => {
     const month = new Date().toISOString().slice(0, 7)
     void fetch(`/api/budgets?month=${month}`, { credentials: 'include' })
@@ -192,6 +206,76 @@ export function Deposits() {
       setSaving(false)
     }
   }
+  function closeSelowImport() {
+    setImportDeposit(null)
+    setImportRows([])
+    setImportBudgets([])
+    setImportMappings({})
+    setImportFileName('')
+    setImportResult(null)
+    setError('')
+  }
+  async function loadSelowFile(file?: File) {
+    if (!file) return
+    setParsingImport(true)
+    setError('')
+    setImportResult(null)
+    try {
+      const rows = await readSelowWorkbook(file),
+        months = Array.from(new Set(rows.filter((row) => row.amount < 0).map((row) => row.transactionDate.slice(0, 7)))),
+        budgetResponses = await Promise.all(
+          months.map(async (month) => {
+            const response = await fetch(`/api/budgets?month=${month}`, { credentials: 'include' }),
+              raw = await response.json().catch(() => ({}))
+            if (!response.ok) throw new Error(raw.error || `RAB ${month} belum dapat dimuat`)
+            return (raw.categories || []).map((category: BudgetCategory) => ({ ...category, month })) as ImportBudgetCategory[]
+          }),
+        )
+      setImportRows(rows)
+      setImportBudgets(budgetResponses.flat())
+      setImportMappings({})
+      setImportFileName(file.name)
+    } catch (e) {
+      setImportRows([])
+      setImportBudgets([])
+      setImportMappings({})
+      setImportFileName('')
+      setError(e instanceof Error ? e.message : 'File Selow.id belum dapat dibaca')
+    } finally {
+      setParsingImport(false)
+    }
+  }
+  async function importSelowTransactions(formData: FormData) {
+    if (!importDeposit || !importReady) return
+    setSaving(true)
+    setError('')
+    try {
+      const response = await fetch(`/api/deposits/${importDeposit.id}/import-selow`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sourceAccountId: importTopupTotal > 0 ? String(formData.get('sourceAccountId')) || undefined : undefined,
+            overrideReason: String(formData.get('overrideReason')).trim() || undefined,
+            rows: importRows.map((row) => ({
+              transactionDate: row.transactionDate,
+              transactionTime: row.transactionTime,
+              note: row.note || undefined,
+              amount: row.amount,
+              budgetCategoryId: row.amount < 0 ? importMappings[`${row.transactionDate.slice(0, 7)}|${row.merchant}`] : undefined,
+            })),
+          }),
+        }),
+        result = (await response.json().catch(() => ({}))) as SelowImportResult & { error?: string }
+      if (!response.ok) throw new Error(result.error || 'Transaksi Selow.id belum dapat diimpor')
+      await refresh()
+      setImportResult(result)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Terjadi kesalahan')
+    } finally {
+      setSaving(false)
+    }
+  }
   return (
     <>
       <PageHeader
@@ -310,6 +394,9 @@ export function Deposits() {
                   </Button>
                   <Button variant="secondary" onClick={() => { setError(''); setDeleteTarget(accounts.find((item) => item.id === deposit.id) || null) }}>
                     <Trash2 size={15} /> Hapus
+                  </Button>
+                  <Button variant="secondary" onClick={() => { setError(''); setImportDeposit(deposit); setImportRows([]); setImportResult(null) }}>
+                    <FileUp size={15} /> Impor Selow
                   </Button>
                   <Button
                     variant="secondary"
@@ -432,6 +519,73 @@ export function Deposits() {
               </Button>
             </div>
           </form>
+        </Modal>
+      )}
+      {importDeposit && (
+        <Modal
+          className="selow-import-modal"
+          title={`Impor transaksi ${importDeposit.platform}`}
+          description="Gunakan file Excel hasil Export pada halaman Card Details Selow.id."
+          onClose={() => !saving && closeSelowImport()}
+        >
+          {importResult ? (
+            <div className="selow-import-result">
+              <span className="selow-import-success"><CheckCircle2 size={28}/></span>
+              <h3>Impor selesai</h3>
+              <p>Saldo VCC, transaksi, dan realisasi RAB telah diperbarui.</p>
+              <div className="selow-result-grid">
+                <div><strong>{importResult.imported}</strong><span>transaksi baru</span></div>
+                <div><strong>{importResult.matched}</strong><span>cocok dengan catatan lama</span></div>
+                <div><strong>{importResult.duplicates}</strong><span>duplikat dilewati</span></div>
+              </div>
+              <div className="modal-actions"><Button onClick={closeSelowImport}>Selesai</Button></div>
+            </div>
+          ) : (
+            <form className="form-grid selow-import-form" action={importSelowTransactions}>
+              {error && <div className="auth-error span-2">{error}</div>}
+              <label className="selow-file-field span-2">
+                <FileSpreadsheet size={22}/>
+                <span><strong>{importFileName || 'Pilih export Selow.id'}</strong><small>Format .xlsx, maksimal 5 MB dan 2.000 transaksi.</small></span>
+                <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => void loadSelowFile(event.target.files?.[0])}/>
+              </label>
+              {parsingImport && <div className="selow-import-loading span-2">Membaca dan memvalidasi file…</div>}
+              {importRows.length > 0 && (
+                <>
+                  <div className="selow-import-summary span-2">
+                    <div><span>Periode</span><strong>{importRows[0].transactionDate} — {importRows.at(-1)?.transactionDate}</strong></div>
+                    <div><span>Jumlah baris</span><strong>{importRows.length}</strong></div>
+                    <div><span>Top-up</span><strong className="positive">{formatIDR(importTopupTotal)}</strong></div>
+                    <div><span>Debit</span><strong className="negative">{formatIDR(importDebitTotal)}</strong></div>
+                  </div>
+                  {importTopupTotal > 0 && (sources.length ? (
+                    <label className="span-2">Rekening sumber untuk top-up
+                      <select name="sourceAccountId" defaultValue="" required>
+                        <option value="" disabled>Pilih rekening sumber</option>
+                        {sources.map((account) => <option value={account.id} key={account.id}>{account.name} — saldo {formatIDR(account.balance)}</option>)}
+                      </select>
+                      <small>Total top-up {formatIDR(importTopupTotal)} akan mengurangi rekening ini.</small>
+                    </label>
+                  ) : <div className="deposit-source-empty span-2"><AlertTriangle size={19}/><span><strong>Belum ada rekening sumber</strong><small>Tambahkan rekening sebelum mengimpor top-up Selow.id.</small></span><Button variant="secondary" onClick={()=>navigate('/rekening')}>Buka Rekening</Button></div>)}
+                  <fieldset className="selow-rab-map span-2">
+                    <legend>Pemetaan debit ke RAB</legend>
+                    <p>Satu merchant dapat diarahkan ke pos RAB berbeda. Sistem memastikan periodenya sama dengan tanggal transaksi.</p>
+                    {importGroups.map((group) => {
+                      const [month, merchant] = group.split('|'),
+                        rowCount = importRows.filter((row) => row.amount < 0 && row.transactionDate.startsWith(month) && row.merchant === merchant).length,
+                        total = importRows.filter((row) => row.amount < 0 && row.transactionDate.startsWith(month) && row.merchant === merchant).reduce((sum, row) => sum + Math.abs(row.amount), 0),
+                        options = importBudgets.filter((category) => category.month === month)
+                      return <div className="selow-rab-row" key={group}><span><strong>{merchant}</strong><small>{month} · {rowCount} transaksi · {formatIDR(total)}</small></span><select aria-label={`RAB ${merchant} ${month}`} value={importMappings[group] || ''} onChange={(event)=>setImportMappings((current)=>({...current,[group]:event.target.value}))} required><option value="" disabled>Pilih pos RAB</option>{options.map((category)=><option value={category.id} key={category.id}>{category.name} — sisa {formatIDR(category.plannedAmount-category.actual-category.pendingAmount-category.committedAmount)}</option>)}</select></div>
+                    })}
+                    {!importGroups.length && <div className="selow-map-empty">Tidak ada debit yang perlu dipetakan.</div>}
+                  </fieldset>
+                  <label className="span-2">Alasan override RAB <span className="optional-label">Jika diperlukan</span><input name="overrideReason" maxLength={500} placeholder="Diisi jika realisasi melebihi sisa anggaran"/></label>
+                  <div className="selow-preview span-2"><div><strong>Pratinjau transaksi</strong><span>Menampilkan {Math.min(6, importRows.length)} dari {importRows.length} baris</span></div>{importRows.slice(0,6).map((row,index)=><div className="selow-preview-row" key={`${row.transactionDate}-${row.transactionTime}-${index}`}><span>{row.transactionDate}<small>{row.transactionTime}</small></span><span>{row.note || 'Top-up Selow.id'}</span><strong className={row.amount>0?'positive':'negative'}>{row.amount>0?'+':''}{formatIDR(row.amount)}</strong></div>)}</div>
+                  <div className="vcc-security-note span-2"><ShieldCheck size={19}/><span><strong>Impor aman dan tidak menggandakan data</strong><small>File dibaca di perangkat Anda. Server hanya menerima tanggal, catatan, nominal, dan RAB. Catatan manual dengan tanggal dan nominal yang persis sama akan dicocokkan; catatan perkiraan yang berbeda perlu dibatalkan terlebih dahulu.</small></span></div>
+                </>
+              )}
+              <div className="modal-actions span-2"><Button variant="secondary" onClick={closeSelowImport} disabled={saving}>Batal</Button><Button type="submit" disabled={saving||parsingImport||!importReady||(importTopupTotal>0&&!sources.length)}>{saving?'Mengimpor…':`Impor ${importRows.length||''} transaksi`}</Button></div>
+            </form>
+          )}
         </Modal>
       )}
       {createDeposit && (

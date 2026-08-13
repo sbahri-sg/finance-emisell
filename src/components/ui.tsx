@@ -48,10 +48,10 @@ export function Button({
   return <button className={`button button-${variant}`} type={type} onClick={onClick} disabled={disabled}>{children}</button>
 }
 
-export function Modal({ title, description, onClose, children }: { title: string; description?: string; onClose: () => void; children: ReactNode }) {
+export function Modal({ title, description, onClose, children, className = '' }: { title: string; description?: string; onClose: () => void; children: ReactNode; className?: string }) {
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <section className={`modal ${className}`} role="dialog" aria-modal="true" aria-labelledby="modal-title">
         <header className="modal-header">
           <div>
             <h2 id="modal-title">{title}</h2>
