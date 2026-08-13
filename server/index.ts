@@ -713,7 +713,7 @@ app.get('/api/bootstrap', requireAuth, async (req: AuthedRequest, res) => {
       [org],
     ),
     pool.query(
-      `select t.id,to_char(t.transaction_date,'YYYY-MM-DD') date,t.description,coalesce((select ec.name from expense_categories ec where ec.id=t.expense_category_id),t.category) category,t.kind,t.status,coalesce(t.reference,'') reference,coalesce(t.counterparty,'') counterparty,coalesce(t.invoice_number,'') "invoiceNumber",coalesce(t.income_source,'') "incomeSource",coalesce(t.payment_method,'') "paymentMethod",coalesce(t.proof_url,'') "proofUrl",coalesce(t.budget_category_id::text,'') "budgetCategoryId",coalesce(t.budget_item_name,'') "budgetItemName",coalesce((select jsonb_agg(jsonb_build_object('budgetItemId',tbi.budget_item_id,'itemName',tbi.item_name,'quantity',tbi.quantity,'plannedUnitPrice',tbi.planned_unit_price,'actualUnitPrice',tbi.actual_unit_price,'subtotal',tbi.subtotal) order by tbi.created_at) from transaction_budget_items tbi where tbi.transaction_id=t.id),'[]'::jsonb) "budgetItems",coalesce((select ea.id::text from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by abs(e.amount) desc limit 1),'') "accountId",(t.kind in('income','expense') and not exists(select 1 from bills b where b.paid_transaction_id=t.id)) editable,coalesce((select e.amount from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by case when t.kind in('deposit_topup','deposit_usage') and ea.kind='deposit' then 0 else 1 end,abs(e.amount) desc limit 1),0)::numeric amount,coalesce((select ea.name from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by case when t.kind in('deposit_topup','deposit_usage') and ea.kind='deposit' then 0 else 1 end,abs(e.amount) desc limit 1),'') account from transactions t where t.organization_id=$1 and t.status<>'reversed' and t.kind<>'reversal' and not exists(select 1 from transactions r where r.reversal_of=t.id and r.status='posted') order by t.transaction_date desc,t.created_at desc limit 100`,
+      `select t.id,to_char(t.transaction_date,'YYYY-MM-DD') date,t.description,coalesce((select ec.name from expense_categories ec where ec.id=t.expense_category_id),t.category) category,t.kind,t.status,coalesce(t.reference,'') reference,coalesce(t.counterparty,'') counterparty,coalesce(t.invoice_number,'') "invoiceNumber",coalesce(t.income_source,'') "incomeSource",coalesce(t.payment_method,'') "paymentMethod",coalesce(t.proof_url,'') "proofUrl",coalesce(t.budget_category_id::text,'') "budgetCategoryId",coalesce(t.budget_item_name,'') "budgetItemName",coalesce((select jsonb_agg(jsonb_build_object('budgetItemId',tbi.budget_item_id,'itemName',tbi.item_name,'quantity',tbi.quantity,'plannedUnitPrice',tbi.planned_unit_price,'actualUnitPrice',tbi.actual_unit_price,'subtotal',tbi.subtotal) order by tbi.created_at) from transaction_budget_items tbi where tbi.transaction_id=t.id),'[]'::jsonb) "budgetItems",coalesce((select ea.id::text from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by case when t.kind='transfer' then e.amount else 0 end,abs(e.amount) desc limit 1),'') "accountId",(t.kind in('income','expense') and not exists(select 1 from bills b where b.paid_transaction_id=t.id)) editable,coalesce((select e.amount from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by case when t.kind in('deposit_topup','deposit_usage') and ea.kind='deposit' then 0 else 1 end,case when t.kind='transfer' then e.amount else 0 end,abs(e.amount) desc limit 1),0)::numeric amount,coalesce((select ea.name from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by case when t.kind in('deposit_topup','deposit_usage') and ea.kind='deposit' then 0 else 1 end,case when t.kind='transfer' then e.amount else 0 end,abs(e.amount) desc limit 1),'') account from transactions t where t.organization_id=$1 and t.status<>'reversed' and t.kind<>'reversal' and not exists(select 1 from transactions r where r.reversal_of=t.id and r.status='posted') order by t.transaction_date desc,t.created_at desc limit 100`,
       [org],
     ),
     pool.query(
@@ -868,6 +868,62 @@ app.post('/api/accounts/:id/reconcile', requireAuth, requireFinance, async (req:
         id: reconciliation.rows[0].id,
         difference: Number(reconciliation.rows[0].difference),
       })
+    } catch (e) {
+      await c.query('rollback')
+      throw e
+    } finally {
+      c.release()
+    }
+  } catch (e) {
+    next(e)
+  }
+})
+
+app.post('/api/transfers', requireAuth, requireFinance, async (req: AuthedRequest, res, next) => {
+  try {
+    const input = z.object({
+      transactionDate: z.iso.date(),
+      sourceAccountId: z.string().uuid(),
+      destinationAccountId: z.string().uuid(),
+      amount: z.number().positive().max(1e15),
+      reference: z.string().trim().max(100).optional(),
+      note: z.string().trim().max(240).optional(),
+      proofUrl: z.url().max(500).optional(),
+    }).refine((value) => value.sourceAccountId !== value.destinationAccountId, { path: ['destinationAccountId'], message: 'Rekening tujuan harus berbeda' }).parse(req.body),
+      org = req.auth!.organizationId,
+      c = await pool.connect()
+    try {
+      await c.query('begin')
+      const lockedAccounts = await c.query(`select id,name,kind,currency,opening_balance from accounts where organization_id=$1 and active and kind in('bank','cash','ewallet') and id in($2,$3) order by id for update`, [org, input.sourceAccountId, input.destinationAccountId])
+      const source = lockedAccounts.rows.find((account) => account.id === input.sourceAccountId),
+        destination = lockedAccounts.rows.find((account) => account.id === input.destinationAccountId)
+      if (!source || !destination) {
+        await c.query('rollback')
+        return res.status(400).json({ error: 'Rekening sumber atau tujuan tidak valid' })
+      }
+      if (source.currency !== destination.currency) {
+        await c.query('rollback')
+        return res.status(409).json({ error: 'Transfer antar mata uang belum didukung' })
+      }
+      const sourceEntries = await c.query(`select coalesce(sum(case when t.status='posted' then e.amount else 0 end),0)::numeric amount from transaction_entries e join transactions t on t.id=e.transaction_id where e.account_id=$1`, [source.id]),
+        sourceBalance = Number(source.opening_balance) + Number(sourceEntries.rows[0].amount)
+      if (sourceBalance < input.amount) {
+        await c.query('rollback')
+        return res.status(409).json({ error: `Saldo ${source.name} tidak mencukupi. Saldo tersedia Rp ${sourceBalance.toLocaleString('id-ID')}` })
+      }
+      if (input.reference) {
+        const duplicate = await c.query(`select 1 from transactions where organization_id=$1 and lower(reference)=lower($2) limit 1`, [org, input.reference])
+        if (duplicate.rowCount) {
+          await c.query('rollback')
+          return res.status(409).json({ error: 'Referensi transfer sudah pernah digunakan' })
+        }
+      }
+      const description = input.note || `Transfer ${source.name} ke ${destination.name}`
+      const transaction = await c.query(`insert into transactions(organization_id,transaction_date,kind,status,description,category,reference,counterparty,payment_method,proof_url,created_by,posted_by,posted_at) values($1,$2::date,'transfer','posted',$3,'Transfer internal',$4,$5,'transfer',$6,$7,$7,now()) returning id`, [org, input.transactionDate, description, input.reference || null, destination.name, input.proofUrl || null, req.auth!.userId])
+      await c.query(`insert into transaction_entries(transaction_id,account_id,amount) values($1,$2,$3),($1,$4,$5)`, [transaction.rows[0].id, source.id, -input.amount, destination.id, input.amount])
+      await c.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'transaction',$3,'internal_transfer',$4)`, [org, req.auth!.userId, transaction.rows[0].id, JSON.stringify({ sourceAccountId: source.id, destinationAccountId: destination.id, amount: input.amount, reference: input.reference || null, sourceBalanceBefore: sourceBalance })])
+      await c.query('commit')
+      res.status(201).json({ id: transaction.rows[0].id })
     } catch (e) {
       await c.query('rollback')
       throw e

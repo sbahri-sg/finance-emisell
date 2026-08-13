@@ -95,7 +95,8 @@ export function Transactions() {
   }, [expenseCartTotal, selectedExpenseBudget?.budgetModel])
   const monthItems = items.filter((item) => item.date.startsWith(currentMonth))
   const incomeTotal = monthItems.filter((item) => item.kind === 'income' && item.status === 'posted').reduce((sum, item) => sum + Math.max(0, item.amount), 0)
-  const expenseTotal = Math.abs(monthItems.filter((item) => item.amount < 0 && item.status === 'posted').reduce((sum, item) => sum + item.amount, 0))
+  const expenseItems = monthItems.filter((item) => ['expense', 'deposit_usage'].includes(item.kind) && item.status === 'posted')
+  const expenseTotal = Math.abs(expenseItems.reduce((sum, item) => sum + Math.min(0, item.amount), 0))
   const pendingTotal = monthItems.filter((item) => item.status === 'pending' || item.status === 'draft').reduce((sum, item) => sum + Math.abs(item.amount), 0)
 
   async function createIncome(formData: FormData) {
@@ -294,7 +295,7 @@ export function Transactions() {
         <Card>
           <span>Dana keluar bulan ini</span>
           <strong>{formatIDR(expenseTotal)}</strong>
-          <small>{monthItems.filter((item) => item.amount < 0 && item.status === 'posted').length} transaksi diposting</small>
+          <small>{expenseItems.length} transaksi diposting</small>
         </Card>
         <Card>
           <span>Menunggu verifikasi</span>

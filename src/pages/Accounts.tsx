@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { CheckCircle2, CircleAlert, Landmark, MoreHorizontal, Plus, RefreshCw, Wallet } from 'lucide-react'
+import { ArrowRightLeft, CheckCircle2, CircleAlert, Landmark, MoreHorizontal, Plus, RefreshCw, Wallet } from 'lucide-react'
 import { useFinance } from '../lib/FinanceContext'
 import { formatCurrency, formatDate, formatIDR } from '../lib/format'
 import { Badge, Button, Card, ConfirmActionModal, Modal, PageHeader } from '../components/ui'
@@ -12,6 +12,8 @@ export function Accounts() {
     [editing, setEditing] = useState<Account | null>(null),
     [deleteTarget, setDeleteTarget] = useState<Account | null>(null),
     [reconcile, setReconcile] = useState<Account | null>(null),
+    [transferModal, setTransferModal] = useState(false),
+    [transferSourceId, setTransferSourceId] = useState(''),
     [saving, setSaving] = useState(false),
     [error, setError] = useState('')
   const visible = accounts.filter((account) => ['bank', 'cash', 'ewallet'].includes(account.kind)),
@@ -86,6 +88,20 @@ export function Accounts() {
     })
     if (ok) setReconcile(null)
   }
+  async function transferFunds(formData: FormData) {
+    const ok = await api('/api/transfers', {
+      transactionDate: String(formData.get('transactionDate')),
+      sourceAccountId: String(formData.get('sourceAccountId')),
+      destinationAccountId: String(formData.get('destinationAccountId')),
+      amount: Number(formData.get('amount')),
+      reference: String(formData.get('reference')).trim() || undefined,
+      note: String(formData.get('note')).trim() || undefined,
+      proofUrl: String(formData.get('proofUrl')).trim() || undefined,
+    })
+    if (ok) setTransferModal(false)
+  }
+  const transferSource = visible.find((account) => account.id === transferSourceId),
+    transferDestinations = visible.filter((account) => account.id !== transferSourceId && (!transferSource || account.currency === transferSource.currency))
   return (
     <>
       <PageHeader
@@ -106,6 +122,17 @@ export function Accounts() {
                 <RefreshCw size={16} /> Rekonsiliasi
               </Button>
               <Button
+                variant="secondary"
+                onClick={() => {
+                  setError('')
+                  setTransferSourceId(liquid[0]?.id || '')
+                  setTransferModal(true)
+                }}
+                disabled={liquid.length < 2}
+              >
+                <ArrowRightLeft size={16} /> Transfer dana
+              </Button>
+              <Button
                 onClick={() => {
                   setError('')
                   setAddModal(true)
@@ -117,7 +144,7 @@ export function Accounts() {
           ) : undefined
         }
       />
-      {error && !addModal && !reconcile && !editing && (
+      {error && !addModal && !reconcile && !editing && !transferModal && (
         <div className="budget-alert error">
           <span>{error}</span>
           <button onClick={() => setError('')}>Tutup</button>
@@ -293,6 +320,56 @@ export function Accounts() {
               <Button type="submit" disabled={saving}>
                 {saving ? 'Mencocokkan…' : 'Simpan rekonsiliasi'}
               </Button>
+            </div>
+          </form>
+        </Modal>
+      )}
+      {transferModal && (
+        <Modal
+          title="Transfer dana internal"
+          description="Pindahkan dana antar rekening perusahaan tanpa mencatat pemasukan atau pengeluaran."
+          onClose={() => { setTransferModal(false); setError('') }}
+        >
+          <form className="form-grid" action={transferFunds}>
+            {error && <div className="auth-error span-2">{error}</div>}
+            <label>
+              Tanggal transfer
+              <input name="transactionDate" type="date" defaultValue={today} required />
+            </label>
+            <label>
+              Nominal
+              <input name="amount" type="number" min="1" step="1" required />
+            </label>
+            <label>
+              Dari rekening
+              <select name="sourceAccountId" value={transferSourceId} onChange={(event) => setTransferSourceId(event.target.value)} required>
+                <option value="" disabled>Pilih rekening sumber</option>
+                {visible.map((account) => <option key={account.id} value={account.id}>{account.name} — {formatCurrency(account.balance, account.currency)}</option>)}
+              </select>
+            </label>
+            <label>
+              Ke rekening
+              <select name="destinationAccountId" key={transferSourceId} defaultValue="" required>
+                <option value="" disabled>Pilih rekening tujuan</option>
+                {transferDestinations.map((account) => <option key={account.id} value={account.id}>{account.name} — {formatCurrency(account.balance, account.currency)}</option>)}
+              </select>
+            </label>
+            <label>
+              Referensi transfer <span className="optional-label">Opsional</span>
+              <input name="reference" maxLength={100} placeholder="Nomor mutasi bank" />
+            </label>
+            <label>
+              Link bukti <span className="optional-label">Opsional</span>
+              <input name="proofUrl" type="url" maxLength={500} placeholder="https://..." />
+            </label>
+            <label className="span-2">
+              Catatan <span className="optional-label">Opsional</span>
+              <input name="note" maxLength={240} placeholder="Contoh: Pengisian kas kecil operasional" />
+            </label>
+            <div className="form-note span-2">Rekening sumber berkurang dan rekening tujuan bertambah dalam satu jurnal. Total dana perusahaan tidak berubah dan RAB tidak terpengaruh.</div>
+            <div className="modal-actions span-2">
+              <Button variant="secondary" onClick={() => setTransferModal(false)}>Batal</Button>
+              <Button type="submit" disabled={saving || !transferSourceId || !transferDestinations.length}>{saving ? 'Memproses…' : 'Transfer dana'}</Button>
             </div>
           </form>
         </Modal>
