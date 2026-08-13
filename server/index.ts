@@ -629,6 +629,7 @@ app.post('/api/backups', settingsLimit, requireAuth, requireUserAdmin, async (re
         entries = await c.query(`select e.* from transaction_entries e join transactions t on t.id=e.transaction_id where t.organization_id=$1`, [org]),
         transactionBudgetItems = await c.query(`select tbi.* from transaction_budget_items tbi join transactions t on t.id=tbi.transaction_id where t.organization_id=$1`, [org]),
         bills = await c.query(`select * from bills where organization_id=$1 and archived_at is null`, [org]),
+        payroll = await c.query(`select * from payroll_batches where organization_id=$1`, [org]),
         purchases = await c.query(`select * from purchase_requests where organization_id=$1`, [org]),
         items = await c.query(`select i.* from purchase_request_items i join purchase_requests p on p.id=i.purchase_request_id where p.organization_id=$1`, [org]),
         budgets = await c.query(`select * from budget_periods where organization_id=$1`, [org]),
@@ -645,6 +646,7 @@ app.post('/api/backups', settingsLimit, requireAuth, requireUserAdmin, async (re
           transactionEntries: entries.rows,
           transactionBudgetItems: transactionBudgetItems.rows,
           bills: bills.rows,
+          payrollBatches: payroll.rows,
           purchaseRequests: purchases.rows,
           purchaseRequestItems: items.rows,
           budgets: budgets.rows,
@@ -653,7 +655,7 @@ app.post('/api/backups', settingsLimit, requireAuth, requireUserAdmin, async (re
           reconciliations: reconciliations.rows,
           auditLogs: audit.rows,
         },
-        itemCount = accounts.rows.length + transactions.rows.length + transactionBudgetItems.rows.length + bills.rows.length + purchases.rows.length + budgets.rows.length,
+        itemCount = accounts.rows.length + transactions.rows.length + transactionBudgetItems.rows.length + bills.rows.length + payroll.rows.length + purchases.rows.length + budgets.rows.length,
         backup = await c.query(`insert into data_backups(organization_id,created_by,snapshot,item_count) values($1,$2,$3,$4) returning id,created_at "createdAt",item_count "itemCount"`, [org, req.auth!.userId, JSON.stringify(snapshot), itemCount])
       await c.query(`delete from data_backups where organization_id=$1 and id not in(select id from data_backups where organization_id=$1 order by created_at desc limit 20)`, [org])
       await c.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'backup',$3,'create',$4)`, [org, req.auth!.userId, backup.rows[0].id, JSON.stringify({ itemCount })])
@@ -713,7 +715,7 @@ app.get('/api/bootstrap', requireAuth, async (req: AuthedRequest, res) => {
       [org],
     ),
     pool.query(
-      `select t.id,to_char(t.transaction_date,'YYYY-MM-DD') date,t.description,coalesce((select ec.name from expense_categories ec where ec.id=t.expense_category_id),t.category) category,t.kind,t.status,coalesce(t.reference,'') reference,coalesce(t.counterparty,'') counterparty,coalesce(t.invoice_number,'') "invoiceNumber",coalesce(t.income_source,'') "incomeSource",coalesce(t.payment_method,'') "paymentMethod",coalesce(t.proof_url,'') "proofUrl",coalesce(t.budget_category_id::text,'') "budgetCategoryId",coalesce(t.budget_item_name,'') "budgetItemName",coalesce((select jsonb_agg(jsonb_build_object('budgetItemId',tbi.budget_item_id,'itemName',tbi.item_name,'quantity',tbi.quantity,'plannedUnitPrice',tbi.planned_unit_price,'actualUnitPrice',tbi.actual_unit_price,'subtotal',tbi.subtotal) order by tbi.created_at) from transaction_budget_items tbi where tbi.transaction_id=t.id),'[]'::jsonb) "budgetItems",coalesce((select ea.id::text from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by case when t.kind='transfer' then e.amount else 0 end,abs(e.amount) desc limit 1),'') "accountId",(t.kind in('income','expense') and not exists(select 1 from bills b where b.paid_transaction_id=t.id)) editable,coalesce((select e.amount from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by case when t.kind in('deposit_topup','deposit_usage') and ea.kind='deposit' then 0 else 1 end,case when t.kind='transfer' then e.amount else 0 end,abs(e.amount) desc limit 1),0)::numeric amount,coalesce((select ea.name from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by case when t.kind in('deposit_topup','deposit_usage') and ea.kind='deposit' then 0 else 1 end,case when t.kind='transfer' then e.amount else 0 end,abs(e.amount) desc limit 1),'') account from transactions t where t.organization_id=$1 and t.status<>'reversed' and t.kind<>'reversal' and not exists(select 1 from transactions r where r.reversal_of=t.id and r.status='posted') order by t.transaction_date desc,t.created_at desc limit 100`,
+      `select t.id,to_char(t.transaction_date,'YYYY-MM-DD') date,t.description,coalesce((select ec.name from expense_categories ec where ec.id=t.expense_category_id),t.category) category,t.kind,t.status,coalesce(t.reference,'') reference,coalesce(t.counterparty,'') counterparty,coalesce(t.invoice_number,'') "invoiceNumber",coalesce(t.income_source,'') "incomeSource",coalesce(t.payment_method,'') "paymentMethod",coalesce(t.proof_url,'') "proofUrl",coalesce(t.budget_category_id::text,'') "budgetCategoryId",coalesce(t.budget_item_name,'') "budgetItemName",coalesce((select jsonb_agg(jsonb_build_object('budgetItemId',tbi.budget_item_id,'itemName',tbi.item_name,'quantity',tbi.quantity,'plannedUnitPrice',tbi.planned_unit_price,'actualUnitPrice',tbi.actual_unit_price,'subtotal',tbi.subtotal) order by tbi.created_at) from transaction_budget_items tbi where tbi.transaction_id=t.id),'[]'::jsonb) "budgetItems",coalesce((select ea.id::text from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by case when t.kind='transfer' then e.amount else 0 end,abs(e.amount) desc limit 1),'') "accountId",(t.kind in('income','expense') and not exists(select 1 from bills b where b.paid_transaction_id=t.id) and not exists(select 1 from payroll_batches pb where pb.payment_transaction_id=t.id)) editable,coalesce((select e.amount from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by case when t.kind in('deposit_topup','deposit_usage') and ea.kind='deposit' then 0 else 1 end,case when t.kind='transfer' then e.amount else 0 end,abs(e.amount) desc limit 1),0)::numeric amount,coalesce((select ea.name from transaction_entries e join accounts ea on ea.id=e.account_id where e.transaction_id=t.id and ea.kind<>'clearing' order by case when t.kind in('deposit_topup','deposit_usage') and ea.kind='deposit' then 0 else 1 end,case when t.kind='transfer' then e.amount else 0 end,abs(e.amount) desc limit 1),'') account from transactions t where t.organization_id=$1 and t.status<>'reversed' and t.kind<>'reversal' and not exists(select 1 from transactions r where r.reversal_of=t.id and r.status='posted') order by t.transaction_date desc,t.created_at desc limit 100`,
       [org],
     ),
     pool.query(
@@ -935,7 +937,114 @@ app.post('/api/transfers', requireAuth, requireFinance, async (req: AuthedReques
   }
 })
 
-async function assertBudgetAvailable(c: import('pg').PoolClient, org: string, categoryId: string, amount: number, purchaseRequestId: string | undefined, role: Auth['role'], overrideReason?: string) {
+const payrollBatchInput = z.object({
+  month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
+  employeeCount: z.number().int().positive().max(10000),
+  netPay: z.number().positive().max(1e15),
+  budgetCategoryId: z.string().uuid(),
+  notes: z.string().trim().max(500).optional(),
+  overrideReason: z.string().trim().max(500).optional(),
+})
+
+app.get('/api/payroll', requireAuth, requireFinance, async (req: AuthedRequest, res, next) => {
+  try {
+    const result = await pool.query(`select pb.id,to_char(pb.payroll_month,'YYYY-MM') "month",pb.employee_count "employeeCount",pb.net_pay::numeric "netPay",pb.status,pb.budget_category_id "budgetCategoryId",bc.name "budgetCategory",coalesce(pb.payment_transaction_id::text,'') "paymentTransactionId",coalesce(pb.payment_reference,'') "paymentReference",coalesce(pb.proof_url,'') "proofUrl",coalesce(pb.notes,'') notes,to_char(pb.paid_at at time zone 'Asia/Jakarta','YYYY-MM-DD HH24:MI') "paidAt",creator.full_name "createdBy",coalesce(payer.full_name,'') "paidBy",coalesce((select a.name from transaction_entries te join accounts a on a.id=te.account_id where te.transaction_id=pb.payment_transaction_id and te.amount<0 and a.kind in('bank','cash','ewallet') limit 1),'') "paidFrom"
+      from payroll_batches pb join budget_categories bc on bc.id=pb.budget_category_id join users creator on creator.id=pb.created_by left join users payer on payer.id=pb.paid_by
+      where pb.organization_id=$1 order by pb.payroll_month desc,pb.created_at desc`, [req.auth!.organizationId])
+    res.json({ batches: result.rows })
+  } catch (e) { next(e) }
+})
+
+app.post('/api/payroll', requireAuth, requireFinance, async (req: AuthedRequest, res, next) => {
+  try {
+    const input = payrollBatchInput.parse(req.body), org = req.auth!.organizationId, c = await pool.connect()
+    try {
+      await c.query('begin')
+      const category = await c.query(`select bc.id from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id where bc.id=$1 and bp.organization_id=$2 and to_char(bp.month,'YYYY-MM')=$3 and bc.archived_at is null for update of bc,bp`, [input.budgetCategoryId, org, input.month])
+      if (!category.rowCount) {
+        await c.query('rollback')
+        return res.status(400).json({ error: 'Pos RAB harus berasal dari bulan payroll yang sama' })
+      }
+      const budgetCheck = await assertBudgetAvailable(c, org, input.budgetCategoryId, input.netPay, undefined, req.auth!.role, input.overrideReason)
+      const batch = await c.query(`insert into payroll_batches(organization_id,payroll_month,employee_count,net_pay,budget_category_id,notes,created_by) values($1,($2||'-01')::date,$3,$4,$5,$6,$7) returning id`, [org, input.month, input.employeeCount, input.netPay, input.budgetCategoryId, input.notes || null, req.auth!.userId])
+      await c.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'payroll',$3,'create_batch',$4)`, [org, req.auth!.userId, batch.rows[0].id, JSON.stringify({ month: input.month, employeeCount: input.employeeCount, netPay: input.netPay, budgetCategoryId: input.budgetCategoryId, budgetCheck, overrideReason: input.overrideReason || null })])
+      await c.query('commit')
+      res.status(201).json({ id: batch.rows[0].id })
+    } catch (e) {
+      await c.query('rollback')
+      if ((e as { code?: string }).code === '23505') return res.status(409).json({ error: 'Batch payroll bulan ini sudah dibuat' })
+      throw e
+    } finally { c.release() }
+  } catch (e) { next(e) }
+})
+
+app.patch('/api/payroll/:id', requireAuth, requireFinance, async (req: AuthedRequest, res, next) => {
+  try {
+    const input = payrollBatchInput.parse(req.body), org = req.auth!.organizationId, c = await pool.connect()
+    try {
+      await c.query('begin')
+      const current = await c.query(`select id,status from payroll_batches where id=$1 and organization_id=$2 for update`, [req.params.id, org])
+      if (!current.rowCount) { await c.query('rollback'); return res.status(404).json({ error: 'Batch payroll tidak ditemukan' }) }
+      if (current.rows[0].status !== 'ready') { await c.query('rollback'); return res.status(409).json({ error: 'Payroll yang sudah dibayar tidak dapat diubah' }) }
+      const category = await c.query(`select bc.id from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id where bc.id=$1 and bp.organization_id=$2 and to_char(bp.month,'YYYY-MM')=$3 and bc.archived_at is null for update of bc,bp`, [input.budgetCategoryId, org, input.month])
+      if (!category.rowCount) { await c.query('rollback'); return res.status(400).json({ error: 'Pos RAB harus berasal dari bulan payroll yang sama' }) }
+      const budgetCheck = await assertBudgetAvailable(c, org, input.budgetCategoryId, input.netPay, undefined, req.auth!.role, input.overrideReason, String(req.params.id))
+      await c.query(`update payroll_batches set payroll_month=($1||'-01')::date,employee_count=$2,net_pay=$3,budget_category_id=$4,notes=$5,updated_at=now() where id=$6`, [input.month, input.employeeCount, input.netPay, input.budgetCategoryId, input.notes || null, req.params.id])
+      await c.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'payroll',$3,'update_batch',$4)`, [org, req.auth!.userId, req.params.id, JSON.stringify({ ...input, budgetCheck })])
+      await c.query('commit')
+      res.json({ id: req.params.id })
+    } catch (e) {
+      await c.query('rollback')
+      if ((e as { code?: string }).code === '23505') return res.status(409).json({ error: 'Batch payroll bulan ini sudah dibuat' })
+      throw e
+    } finally { c.release() }
+  } catch (e) { next(e) }
+})
+
+app.delete('/api/payroll/:id', requireAuth, requireFinance, async (req: AuthedRequest, res, next) => {
+  try {
+    const removed = await pool.query(`delete from payroll_batches where id=$1 and organization_id=$2 and status='ready' returning id`, [req.params.id, req.auth!.organizationId])
+    if (!removed.rowCount) return res.status(409).json({ error: 'Hanya batch yang belum dibayar yang dapat dihapus' })
+    await pool.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'payroll',$3,'delete_batch','{}'::jsonb)`, [req.auth!.organizationId, req.auth!.userId, req.params.id])
+    res.status(204).end()
+  } catch (e) { next(e) }
+})
+
+app.post('/api/payroll/:id/pay', requireAuth, requireFinance, async (req: AuthedRequest, res, next) => {
+  try {
+    const input = z.object({ transactionDate: z.iso.date(), accountId: z.string().uuid(), reference: z.string().trim().max(100).optional(), proofUrl, overrideReason: z.string().trim().max(500).optional() }).parse(req.body),
+      org = req.auth!.organizationId, c = await pool.connect()
+    try {
+      await c.query('begin')
+      const batch = await c.query(`select pb.*,to_char(pb.payroll_month,'YYYY-MM') "month",bc.name "budgetName" from payroll_batches pb join budget_categories bc on bc.id=pb.budget_category_id where pb.id=$1 and pb.organization_id=$2 for update of pb`, [req.params.id, org])
+      if (!batch.rowCount) { await c.query('rollback'); return res.status(404).json({ error: 'Batch payroll tidak ditemukan' }) }
+      if (batch.rows[0].status === 'paid') { await c.query('rollback'); return res.status(409).json({ error: 'Payroll bulan ini sudah dibayar' }) }
+      const source = await c.query(`select id,name,kind,currency,opening_balance from accounts where id=$1 and organization_id=$2 and active and kind in('bank','cash','ewallet') for update`, [input.accountId, org])
+      if (!source.rowCount) { await c.query('rollback'); return res.status(400).json({ error: 'Rekening pembayaran tidak valid' }) }
+      const entries = await c.query(`select coalesce(sum(case when t.status='posted' then te.amount else 0 end),0)::numeric amount from transaction_entries te join transactions t on t.id=te.transaction_id where te.account_id=$1`, [source.rows[0].id])
+      const balance = Number(source.rows[0].opening_balance) + Number(entries.rows[0].amount), amount = Number(batch.rows[0].net_pay)
+      if (balance < amount) { await c.query('rollback'); return res.status(409).json({ error: `Saldo ${source.rows[0].name} tidak mencukupi. Tersedia Rp ${balance.toLocaleString('id-ID')}` }) }
+      if (input.reference) {
+        const duplicate = await c.query(`select 1 from transactions where organization_id=$1 and lower(reference)=lower($2) limit 1`, [org, input.reference])
+        if (duplicate.rowCount) { await c.query('rollback'); return res.status(409).json({ error: 'Referensi pembayaran sudah pernah digunakan' }) }
+      }
+      const budgetCheck = await assertBudgetAvailable(c, org, batch.rows[0].budget_category_id, amount, undefined, req.auth!.role, input.overrideReason, batch.rows[0].id)
+      await c.query(`insert into accounts(organization_id,name,kind,currency,color) values($1,'Pengeluaran','clearing',$2,'#d89b50') on conflict(organization_id,name) do nothing`, [org, source.rows[0].currency])
+      const counterpart = await c.query(`select id from accounts where organization_id=$1 and name='Pengeluaran' and kind='clearing' and active`, [org])
+      const categoryResult = await c.query(`select ec.id,ec.name from budget_categories bc left join expense_categories ec on ec.id=bc.expense_category_id where bc.id=$1`, [batch.rows[0].budget_category_id])
+      const category = categoryResult.rows[0]?.name ? categoryResult.rows[0] : await getFallbackExpenseCategory(c, org, 'Personalia')
+      const description = `Payroll ${new Intl.DateTimeFormat('id-ID',{ month:'long',year:'numeric',timeZone:'Asia/Jakarta' }).format(new Date(`${batch.rows[0].month}-01T12:00:00+07:00`))} — ${batch.rows[0].employee_count} staf`
+      const transaction = await c.query(`insert into transactions(organization_id,transaction_date,kind,status,description,category,expense_category_id,reference,counterparty,budget_category_id,payment_method,proof_url,created_by,posted_by,posted_at) values($1,$2::date,'expense','posted',$3,$4,$5,$6,'Payroll',$7,$8,$9,$10,$10,now()) returning id`, [org, input.transactionDate, description, category.name, category.id, input.reference || null, batch.rows[0].budget_category_id, source.rows[0].kind === 'ewallet' ? 'ewallet' : source.rows[0].kind === 'cash' ? 'cash' : 'transfer', input.proofUrl || null, req.auth!.userId])
+      await c.query(`insert into transaction_entries(transaction_id,account_id,amount) values($1,$2,$3),($1,$4,$5)`, [transaction.rows[0].id, source.rows[0].id, -amount, counterpart.rows[0].id, amount])
+      await c.query(`update payroll_batches set status='paid',payment_transaction_id=$1,payment_reference=$2,proof_url=$3,paid_by=$4,paid_at=now(),updated_at=now() where id=$5`, [transaction.rows[0].id, input.reference || null, input.proofUrl || null, req.auth!.userId, batch.rows[0].id])
+      await c.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'payroll',$3,'pay_batch',$4)`, [org, req.auth!.userId, batch.rows[0].id, JSON.stringify({ transactionId: transaction.rows[0].id, amount, accountId: input.accountId, budgetCheck, overrideReason: input.overrideReason || null })])
+      await c.query('commit')
+      res.status(201).json({ transactionId: transaction.rows[0].id })
+    } catch (e) { await c.query('rollback'); throw e } finally { c.release() }
+  } catch (e) { next(e) }
+})
+
+async function assertBudgetAvailable(c: import('pg').PoolClient, org: string, categoryId: string, amount: number, purchaseRequestId: string | undefined, role: Auth['role'], overrideReason?: string, payrollBatchId?: string) {
   const category = await c.query(`select bc.id,bc.name,bc.planned_amount::numeric planned,bp.status from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id where bc.id=$1 and bp.organization_id=$2 and bc.archived_at is null for update of bc,bp`, [categoryId, org])
   if (!category.rowCount)
     throw Object.assign(new Error('Pos anggaran tidak valid'), {
@@ -945,7 +1054,9 @@ async function assertBudgetAvailable(c: import('pg').PoolClient, org: string, ca
     throw Object.assign(new Error('Periode RAB sudah ditutup'), {
       statusCode: 409,
     })
-  const used = await c.query(`select coalesce((select sum(-te.amount) from transactions t join transaction_entries te on te.transaction_id=t.id join accounts a on a.id=te.account_id where t.organization_id=$1 and t.budget_category_id=$2 and t.status='posted' and a.kind in('bank','cash','ewallet','deposit')),0)::numeric actual,coalesce((select sum(pr.estimated_total) from purchase_requests pr where pr.organization_id=$1 and pr.budget_category_id=$2 and pr.status='approved' and ($3::uuid is null or pr.id<>$3)),0)::numeric committed`, [org, categoryId, purchaseRequestId || null])
+  const used = await c.query(`select
+    coalesce((select sum(-te.amount) from transactions t join transaction_entries te on te.transaction_id=t.id join accounts a on a.id=te.account_id where t.organization_id=$1 and t.budget_category_id=$2 and t.status='posted' and a.kind in('bank','cash','ewallet','deposit')),0)::numeric actual,
+    (coalesce((select sum(pr.estimated_total) from purchase_requests pr where pr.organization_id=$1 and pr.budget_category_id=$2 and pr.status='approved' and ($3::uuid is null or pr.id<>$3)),0)+coalesce((select sum(pb.net_pay) from payroll_batches pb where pb.organization_id=$1 and pb.budget_category_id=$2 and pb.status='ready' and ($4::uuid is null or pb.id<>$4)),0))::numeric committed`, [org, categoryId, purchaseRequestId || null, payrollBatchId || null])
   const projected = Number(used.rows[0].actual) + Number(used.rows[0].committed) + amount
   if (projected > Number(category.rows[0].planned)) {
     if (!overrideReason || overrideReason.trim().length < 5) throw Object.assign(new Error(`Anggaran ${category.rows[0].name} tidak mencukupi. Diperlukan alasan override.`), { statusCode: 409 })
@@ -1730,6 +1841,7 @@ app.post('/api/transactions/:id/reverse', requireAuth, requireFinance, async (re
         await c.query(`update purchase_requests set status='approved',payment_transaction_id=null,paid_amount=null,paid_at=null,paid_by=null,payment_reference=null,proof_reference=null where id=$1`, [original.rows[0].purchase_request_id])
         await c.query(`insert into purchase_events(purchase_request_id,from_status,to_status,actor_id,note) values($1,'purchased','approved',$2,$3)`, [original.rows[0].purchase_request_id, req.auth!.userId, `Pembayaran direversal: ${input.reason}`])
       }
+      await c.query(`update payroll_batches set status='ready',payment_transaction_id=null,payment_reference=null,proof_url=null,paid_by=null,paid_at=null,updated_at=now() where organization_id=$1 and payment_transaction_id=$2`, [org, original.rows[0].id])
       await c.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'transaction',$3,'reverse',$4)`, [
         org,
         req.auth!.userId,
@@ -1768,6 +1880,11 @@ app.patch('/api/transactions/:id', requireAuth, requireFinance, async (req: Auth
     if (linkedBill.rowCount) {
       await c.query('rollback')
       return res.status(409).json({ error: 'Pembayaran tagihan harus dikoreksi dari modul Tagihan & Renewal' })
+    }
+    const linkedPayroll = await c.query('select 1 from payroll_batches where payment_transaction_id=$1', [old.id])
+    if (linkedPayroll.rowCount) {
+      await c.query('rollback')
+      return res.status(409).json({ error: 'Pembayaran payroll harus dikoreksi dari modul Payroll' })
     }
     const linkedPurchase = old.purchase_request_id ? await c.query('select id,status from purchase_requests where id=$1 and organization_id=$2 for update', [old.purchase_request_id, org]) : null
     if (old.purchase_request_id && !linkedPurchase?.rowCount) {
@@ -2072,11 +2189,11 @@ app.get('/api/budgets', requireAuth, async (req: AuthedRequest, res, next) => {
       `select bc.id,bc.name,bc.category_type "categoryType",bc.budget_model "budgetModel",bc.planned_amount::numeric "plannedAmount",bc.color,coalesce(ec.name,bc.expense_category,'Lain-Lain') "expenseCategory",coalesce(ec.id::text,'') "expenseCategoryId",coalesce(ec.active,false) "expenseCategoryActive",bc.details,coalesce((select jsonb_agg(item || jsonb_build_object('purchasedQuantity',coalesce(usage.quantity,0),'remainingQuantity',greatest(0,(item->>'quantity')::int-coalesce(usage.quantity,0))) order by ordinal) from jsonb_array_elements(bc.line_items) with ordinality source(item,ordinal) left join lateral(select sum(tbi.quantity)::int quantity from transaction_budget_items tbi join transactions tx on tx.id=tbi.transaction_id where tbi.budget_category_id=bc.id and tbi.budget_item_id=(item->>'id')::uuid and tx.status='posted' and tx.kind='expense' and not exists(select 1 from transactions r where r.reversal_of=tx.id and r.status='posted')) usage on true),'[]'::jsonb) "lineItems",
     coalesce((select sum(-te.amount) from transactions t join transaction_entries te on te.transaction_id=t.id join accounts a on a.id=te.account_id where t.organization_id=$1 and t.status='posted' and t.budget_category_id=bc.id and a.kind in('bank','cash','ewallet','deposit')),0)::numeric actual,
     coalesce((select sum(pr.estimated_total) from purchase_requests pr where pr.organization_id=$1 and pr.budget_category_id=bc.id and pr.status='submitted'),0)::numeric "pendingAmount",
-    coalesce((select sum(pr.estimated_total) from purchase_requests pr where pr.organization_id=$1 and pr.budget_category_id=bc.id and pr.status='approved'),0)::numeric "committedAmount",
+    (coalesce((select sum(pr.estimated_total) from purchase_requests pr where pr.organization_id=$1 and pr.budget_category_id=bc.id and pr.status='approved'),0)+coalesce((select sum(pb.net_pay) from payroll_batches pb where pb.organization_id=$1 and pb.budget_category_id=bc.id and pb.status='ready'),0))::numeric "committedAmount",
     (not exists(
       select 1 from transactions t where t.budget_category_id=bc.id and t.kind<>'reversal' and t.status in('draft','pending','posted')
       and not exists(select 1 from transactions r where r.reversal_of=t.id and r.status='posted')
-    ) and not exists(select 1 from purchase_requests pr where pr.budget_category_id=bc.id and pr.status in('submitted','approved','purchased'))) "canDelete"
+    ) and not exists(select 1 from purchase_requests pr where pr.budget_category_id=bc.id and pr.status in('submitted','approved','purchased')) and not exists(select 1 from payroll_batches pb where pb.budget_category_id=bc.id)) "canDelete"
     from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id left join expense_categories ec on ec.id=bc.expense_category_id where bc.budget_period_id=$2 and bc.archived_at is null order by bc.created_at,bc.name`,
       [req.auth!.organizationId, period.rows[0].id],
     )
@@ -2260,14 +2377,16 @@ app.delete('/api/budget-categories/:id', requireAuth, requireFinance, async (req
          (select count(*)::int from transactions where budget_category_id=$1) "transactionCount",
          (select count(*)::int from transactions t where t.budget_category_id=$1 and t.kind<>'reversal' and t.status in('draft','pending','posted') and not exists(select 1 from transactions r where r.reversal_of=t.id and r.status='posted')) "activeTransactionCount",
          (select count(*)::int from purchase_requests where budget_category_id=$1) "requestCount",
-         (select count(*)::int from purchase_requests where budget_category_id=$1 and status in('submitted','approved','purchased')) "activeRequestCount"`,
+         (select count(*)::int from purchase_requests where budget_category_id=$1 and status in('submitted','approved','purchased')) "activeRequestCount",
+         (select count(*)::int from payroll_batches where budget_category_id=$1) "payrollCount",
+         (select count(*)::int from payroll_batches where budget_category_id=$1 and status='ready') "activePayrollCount"`,
       [req.params.id],
     )
-    if (usage.rows[0].activeTransactionCount > 0 || usage.rows[0].activeRequestCount > 0) {
+    if (usage.rows[0].activeTransactionCount > 0 || usage.rows[0].activeRequestCount > 0 || usage.rows[0].activePayrollCount > 0) {
       await c.query('rollback')
-      return res.status(409).json({ error: 'Pos masih memiliki transaksi efektif atau pengajuan aktif dan belum dapat diremove.' })
+      return res.status(409).json({ error: 'Pos masih memiliki transaksi, pengajuan, atau batch payroll aktif dan belum dapat diremove.' })
     }
-    const archived = usage.rows[0].transactionCount > 0 || usage.rows[0].requestCount > 0
+    const archived = usage.rows[0].transactionCount > 0 || usage.rows[0].requestCount > 0 || usage.rows[0].payrollCount > 0
     if (archived) await c.query('update budget_categories set archived_at=now(),archived_by=$2,updated_at=now() where id=$1', [req.params.id, req.auth!.userId])
     else await c.query('delete from budget_categories where id=$1', [req.params.id])
     await c.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'budget_category',$3,$4,$5)`, [req.auth!.organizationId, req.auth!.userId, req.params.id, archived ? 'archive' : 'delete', JSON.stringify({ ...category.rows[0], usage: usage.rows[0] })])

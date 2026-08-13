@@ -96,6 +96,20 @@ curl -fsS -b "$cookie_file" "$base/api/settings" | jq -e --arg category "$histor
 fractional_quantity_status=$(curl -sS -o /dev/null -w '%{http_code}' -b "$cookie_file" -X PATCH -H 'Content-Type: application/json' -d '{"name":"Kebutuhan kantor","expenseCategory":"Kebersihan & Perlengkapan","details":["Galon"],"budgetModel":"multi_item","lineItems":[{"name":"Galon","quantity":1.07,"unitPrice":50000}],"categoryType":"variable","plannedAmount":53500,"color":"#d89b50"}' "$base/api/budget-categories/$category_id")
 [ "$fractional_quantity_status" = 400 ]
 
+payroll_payload=$(jq -nc --arg category "$category_id" '{month:"2026-08",employeeCount:10,netPay:1000000,budgetCategoryId:$category,notes:"Total net pay final dari platform payroll"}')
+payroll_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d "$payroll_payload" "$base/api/payroll" | jq -er '.id')
+curl -fsS -b "$cookie_file" "$base/api/budgets?month=2026-08" | jq -e --arg category "$category_id" '(.categories[]|select(.id==$category)|.committedAmount|tonumber)==1000000' >/dev/null
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -b "$cookie_file" -H 'Content-Type: application/json' -d "$payroll_payload" "$base/api/payroll")" = 409 ]
+payroll_payment_payload=$(jq -nc --arg account "$account_id" '{transactionDate:"2026-08-11",accountId:$account,reference:"PAYROLL-TEST-001",proofUrl:"https://example.invalid/payroll-proof"}')
+payroll_transaction_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d "$payroll_payment_payload" "$base/api/payroll/$payroll_id/pay" | jq -er '.transactionId')
+curl -fsS -b "$cookie_file" "$base/api/payroll" | jq -e --arg payroll "$payroll_id" --arg transaction "$payroll_transaction_id" '(.batches[]|select(.id==$payroll)|.status)=="paid" and (.batches[]|select(.id==$payroll)|.paymentTransactionId)==$transaction and (.batches[]|select(.id==$payroll)|.netPay|tonumber)==1000000' >/dev/null
+curl -fsS -b "$cookie_file" "$base/api/bootstrap" | jq -e --arg transaction "$payroll_transaction_id" '(.transactions[]|select(.id==$transaction)|.editable)==false and (.transactions[]|select(.id==$transaction)|.amount|tonumber)==-1000000' >/dev/null
+curl -fsS -b "$cookie_file" "$base/api/budgets?month=2026-08" | jq -e --arg category "$category_id" '(.categories[]|select(.id==$category)|.committedAmount|tonumber)==0 and (.categories[]|select(.id==$category)|.actual|tonumber)==1000000' >/dev/null
+curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"transactionDate":"2026-08-11","reason":"Batalkan pembayaran payroll test"}' "$base/api/transactions/$payroll_transaction_id/reverse" | jq -er '.id' >/dev/null
+curl -fsS -b "$cookie_file" "$base/api/payroll" | jq -e --arg payroll "$payroll_id" '(.batches[]|select(.id==$payroll)|.status)=="ready"' >/dev/null
+curl -fsS -b "$cookie_file" -X DELETE "$base/api/payroll/$payroll_id" -o /dev/null
+curl -fsS -b "$cookie_file" "$base/api/budgets?month=2026-08" | jq -e --arg category "$category_id" '(.categories[]|select(.id==$category)|.committedAmount|tonumber)==0 and (.categories[]|select(.id==$category)|.actual|tonumber)==0' >/dev/null
+
 purchase_payload=$(jq -nc --arg category "$category_id" '{department:"Operasional",title:"Kursi kerja",purpose:"Kebutuhan ergonomi staff",urgency:"normal",vendor:"Vendor Test",quantity:1,unitPrice:1000000,budgetCategoryId:$category}')
 purchase_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d "$purchase_payload" "$base/api/purchase-requests" | jq -er '.id')
 curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"status":"approved","note":"Anggaran tersedia"}' "$base/api/purchase-requests/$purchase_id/transition" | jq -e '.ok==true' >/dev/null

@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
-  Bell, Building2, CalendarClock, ChevronDown, CircleDollarSign,
+  Banknote, Bell, Building2, CalendarClock, ChevronDown, CircleDollarSign,
   FileBarChart, Gauge, Landmark, Menu, PiggyBank, Plus, ReceiptText, Search, Settings, ShoppingCart,
   ShieldCheck, Users, WalletCards, X,
 } from 'lucide-react'
@@ -11,7 +11,7 @@ import { useFinance } from '../lib/FinanceContext'
 const navGroups = [
   {label:'Ringkasan',items:[{to:'/',label:'Dashboard',icon:Gauge}]},
   {label:'Keuangan',items:[{to:'/transaksi',label:'Transaksi',icon:ReceiptText},{to:'/rekening',label:'Rekening & saldo',icon:Landmark},{to:'/deposit',label:'Deposit',icon:CircleDollarSign}]},
-  {label:'Operasional',items:[{to:'/pengajuan-belanja',label:'Pengajuan Belanja',icon:ShoppingCart},{to:'/tagihan',label:'Tagihan & Renewal',icon:CalendarClock}]},
+  {label:'Operasional',items:[{to:'/pengajuan-belanja',label:'Pengajuan Belanja',icon:ShoppingCart},{to:'/tagihan',label:'Tagihan & Renewal',icon:CalendarClock},{to:'/payroll',label:'Payroll',icon:Banknote,financeOnly:true}]},
   {label:'Perencanaan',items:[{to:'/anggaran',label:'Anggaran Bulanan',icon:PiggyBank},{to:'/laporan',label:'Laporan',icon:FileBarChart}]},
   {label:'Administrasi',managerOnly:true,items:[{to:'/tim',label:'Tim & Akses',icon:Users}]},
 ]
@@ -23,6 +23,7 @@ const titles: Record<string, string> = {
   '/pengajuan-belanja': 'Pengajuan belanja',
   '/anggaran': 'Anggaran bulanan (RAB)',
   '/tagihan': 'Tagihan & renewal',
+  '/payroll': 'Payroll',
   '/deposit': 'Deposit platform',
   '/laporan': 'Laporan',
   '/tim': 'Tim & akses',
@@ -56,7 +57,7 @@ export function Layout() {
         </button>
 
         <nav className="main-nav" aria-label="Navigasi utama">
-          {navGroups.filter(group=>!group.managerOnly||user?.role==='owner'||user?.role==='admin').map(group=><div className="nav-group" key={group.label}><div className="nav-label">{group.label}</div>{group.items.map(item=><NavLink key={item.to} to={item.to} end={item.to==='/' } onClick={()=>setMobileOpen(false)}><item.icon size={18}/><span>{item.label}</span>{item.to==='/tagihan'&&bills.filter(bill=>bill.status==='due'||bill.status==='overdue').length>0&&<em>{bills.filter(bill=>bill.status==='due'||bill.status==='overdue').length}</em>}</NavLink>)}</div>)}
+          {navGroups.filter(group=>!group.managerOnly||user?.role==='owner'||user?.role==='admin').map(group=><div className="nav-group" key={group.label}><div className="nav-label">{group.label}</div>{group.items.filter(item=>!('financeOnly' in item)||!item.financeOnly||canManage).map(item=><NavLink key={item.to} to={item.to} end={item.to==='/' } onClick={()=>setMobileOpen(false)}><item.icon size={18}/><span>{item.label}</span>{item.to==='/tagihan'&&bills.filter(bill=>bill.status==='due'||bill.status==='overdue').length>0&&<em>{bills.filter(bill=>bill.status==='due'||bill.status==='overdue').length}</em>}</NavLink>)}</div>)}
         </nav>
 
         <div className="sidebar-footer">

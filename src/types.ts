@@ -63,6 +63,24 @@ export interface Bill {
   paymentMethod?: 'transfer' | 'ewallet' | 'cash' | 'vcc'
 }
 
+export interface PayrollBatch {
+  id: string
+  month: string
+  employeeCount: number
+  netPay: number
+  status: 'ready' | 'paid'
+  budgetCategoryId: string
+  budgetCategory: string
+  paymentTransactionId?: string
+  paymentReference?: string
+  proofUrl?: string
+  notes?: string
+  createdBy: string
+  paidBy?: string
+  paidFrom?: string
+  paidAt?: string
+}
+
 export interface DepositAccount {
   id: string
   platform: string

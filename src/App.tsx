@@ -14,6 +14,7 @@ const Deposits = lazy(() => import('./pages/Deposits').then((module) => ({ defau
 const Reports = lazy(() => import('./pages/Reports').then((module) => ({ default: module.Reports })))
 const Settings = lazy(() => import('./pages/Settings').then((module) => ({ default: module.Settings })))
 const TeamManagement = lazy(() => import('./pages/TeamManagement').then((module) => ({ default: module.TeamManagement })))
+const Payroll = lazy(() => import('./pages/Payroll').then((module) => ({ default: module.Payroll })))
 
 const page = (element: React.ReactNode) => <Suspense fallback={<div className="page-loader">Memuat halaman…</div>}>{element}</Suspense>
 
@@ -27,6 +28,7 @@ const router = createBrowserRouter([{
     { path: 'pengajuan-belanja', element: page(<PurchaseRequests />) },
     { path: 'anggaran', element: page(<MonthlyBudget />) },
     { path: 'tagihan', element: page(<Bills />) },
+    { path: 'payroll', element: page(<Payroll />) },
     { path: 'deposit', element: page(<Deposits />) },
     { path: 'laporan', element: page(<Reports />) },
     { path: 'tim', element: page(<TeamManagement />) },
