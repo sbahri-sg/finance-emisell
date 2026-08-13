@@ -85,6 +85,10 @@ export function Transactions() {
     const itemIndex = category?.lineItems.findIndex((item) => item.name === expenseBudgetItemName) ?? -1
     return itemIndex >= 0 ? `${expenseBudgetCategoryId}:${itemIndex}` : ''
   }, [budgetCategories, expenseBudgetCategoryId, expenseBudgetItemName])
+  const selectedExpenseBudget = useMemo(
+    () => budgetCategories.find((category) => category.id === expenseBudgetCategoryId),
+    [budgetCategories, expenseBudgetCategoryId],
+  )
   const monthItems = items.filter((item) => item.date.startsWith(currentMonth))
   const incomeTotal = monthItems.filter((item) => item.kind === 'income' && item.status === 'posted').reduce((sum, item) => sum + Math.max(0, item.amount), 0)
   const expenseTotal = Math.abs(monthItems.filter((item) => item.amount < 0 && item.status === 'posted').reduce((sum, item) => sum + item.amount, 0))
@@ -201,6 +205,14 @@ export function Transactions() {
     setExpenseBudgetItemName(item.name)
     setExpenseDescription(item.name)
     setExpenseAmount(item.quantity * item.unitPrice)
+    setExpenseCategory(category.expenseCategory || 'Lain-Lain')
+  }
+  function selectBudgetCategory(categoryId: string) {
+    setExpenseBudgetCategoryId(categoryId)
+    setExpenseBudgetItemName('')
+    if (!categoryId) return
+    const category = budgetCategories.find((item) => item.id === categoryId)
+    if (!category) return
     setExpenseCategory(category.expenseCategory || 'Lain-Lain')
   }
   async function postTransaction(id: string) {
@@ -493,7 +505,7 @@ export function Transactions() {
               Nominal
               <input name="amount" type="number" min="1" step="1" required value={expenseAmount || ''} onChange={(event) => setExpenseAmount(Number(event.target.value))} />
             </label>
-            <label>
+            <label className="span-2">
               Rekening
               <select name="accountId" required defaultValue={editing?.accountId || ''}>
                 <option value="" disabled>
@@ -506,29 +518,9 @@ export function Transactions() {
                 ))}
               </select>
             </label>
-            <label>
-              Kategori
-              <select name="category" value={expenseCategory} onChange={(event) => setExpenseCategory(event.target.value)}>
-                {expenseCategory && !expenseCategories.some((category) => category.name === expenseCategory) && <option value={expenseCategory}>{expenseCategory} — nonaktif</option>}
-                {expenseCategories.map((category) => <option value={category.name} key={category.id}>{category.name}</option>)}
-              </select>
-            </label>
             <label className="span-2">
-              Ambil dari rincian RAB <span className="optional-label">Opsional</span>
-              <select value={expenseBudgetItemValue} onChange={(event) => selectBudgetItem(event.target.value)}>
-                <option value="">Pilih item untuk mengisi otomatis</option>
-                {budgetCategories.filter((category) => category.lineItems.length).map((category) => (
-                  <optgroup label={category.name} key={category.id}>
-                    {category.lineItems.map((item, index) => (
-                      <option value={`${category.id}:${index}`} key={`${category.id}-${index}`}>{item.name} — {item.quantity.toLocaleString('id-ID')} × {formatIDR(item.unitPrice)} = {formatIDR(item.quantity * item.unitPrice)}</option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
-            </label>
-            <label className="span-2">
-              Pos RAB
-              <select name="budgetCategoryId" value={expenseBudgetCategoryId} onChange={(event) => { setExpenseBudgetCategoryId(event.target.value); setExpenseBudgetItemName('') }}>
+              Sumber anggaran <span className="optional-label">Opsional</span>
+              <select name="budgetCategoryId" value={expenseBudgetCategoryId} onChange={(event) => selectBudgetCategory(event.target.value)}>
                 <option value="">Di luar RAB</option>
                 {budgetCategories.map((category) => (
                   <option value={category.id} key={category.id}>
@@ -536,6 +528,27 @@ export function Transactions() {
                   </option>
                 ))}
               </select>
+              <span className="field-help">Pilih pos RAB terlebih dahulu agar kategori dan rincian tetap konsisten.</span>
+            </label>
+            {selectedExpenseBudget && selectedExpenseBudget.lineItems.length > 0 && (
+              <label className="span-2">
+                Rincian item RAB <span className="optional-label">Opsional</span>
+                <select value={expenseBudgetItemValue} onChange={(event) => selectBudgetItem(event.target.value)}>
+                  <option value="">Tanpa item tertentu</option>
+                  {selectedExpenseBudget.lineItems.map((item, index) => (
+                    <option value={`${selectedExpenseBudget.id}:${index}`} key={`${selectedExpenseBudget.id}-${index}`}>{item.name} — {item.quantity.toLocaleString('id-ID')} × {formatIDR(item.unitPrice)} = {formatIDR(item.quantity * item.unitPrice)}</option>
+                  ))}
+                </select>
+                <span className="field-help">Memilih item akan mengisi deskripsi dan nominal secara otomatis.</span>
+              </label>
+            )}
+            <label className="span-2">
+              Kategori pencatatan
+              <select name="category" value={expenseCategory} disabled={Boolean(selectedExpenseBudget)} onChange={(event) => setExpenseCategory(event.target.value)}>
+                {expenseCategory && !expenseCategories.some((category) => category.name === expenseCategory) && <option value={expenseCategory}>{expenseCategory} — nonaktif</option>}
+                {expenseCategories.map((category) => <option value={category.name} key={category.id}>{category.name}</option>)}
+              </select>
+              <span className="field-help">{selectedExpenseBudget ? `Otomatis mengikuti pos RAB “${selectedExpenseBudget.name}”.` : 'Pilih manual untuk pengeluaran di luar RAB.'}</span>
             </label>
             <label className="span-2">
               Deskripsi
