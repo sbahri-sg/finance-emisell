@@ -186,6 +186,15 @@ export function MonthlyBudget() {
       }),
     })
   }
+  async function removeCategory(category: BudgetCategory) {
+    if (!category.canDelete) {
+      setError(`${category.name} sudah dipakai oleh transaksi atau pengajuan. Pos dipertahankan agar histori tetap akurat.`)
+      return
+    }
+    if (!window.confirm(`Hapus pos anggaran “${category.name}” beserta seluruh rincian itemnya? Tindakan ini tidak dapat dibatalkan.`)) return
+    const ok = await request(`/api/budget-categories/${category.id}`, { method: 'DELETE' })
+    if (ok) setExpandedCategoryId((current) => current === category.id ? null : current)
+  }
   async function saveCategory(formData: FormData) {
     if (!data.budget) return
     const payload = {
@@ -382,9 +391,20 @@ export function MonthlyBudget() {
                         </button>
                       )}
                       {data.budget?.status !== 'closed' && (
-                        <button className="budget-edit" onClick={() => openCategory(category)} aria-label={`Edit ${category.name}`}>
-                          <Edit3 size={16} />
-                        </button>
+                        <>
+                          <button className="budget-edit" onClick={() => openCategory(category)} aria-label={`Edit ${category.name}`}>
+                            <Edit3 size={16} />
+                          </button>
+                          <button
+                            className="budget-edit budget-category-delete"
+                            onClick={() => void removeCategory(category)}
+                            aria-label={`Hapus pos ${category.name}`}
+                            title={category.canDelete ? `Hapus pos ${category.name}` : 'Tidak dapat dihapus karena sudah dipakai transaksi atau pengajuan'}
+                            disabled={saving || !category.canDelete}
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </>
                       )}
                     </div>
                     {expandedCategoryId === category.id && !!category.lineItems?.length && (

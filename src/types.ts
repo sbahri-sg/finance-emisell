@@ -145,6 +145,7 @@ export interface BudgetCategory {
   expenseCategory?: string
   expenseCategoryId?: string
   expenseCategoryActive?: boolean
+  canDelete?: boolean
   details?: string[]
   budgetModel: BudgetModel
   lineItems: BudgetLineItem[]

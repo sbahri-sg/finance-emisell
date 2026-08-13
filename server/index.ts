@@ -1744,7 +1744,8 @@ app.get('/api/budgets', requireAuth, async (req: AuthedRequest, res, next) => {
       `select bc.id,bc.name,bc.category_type "categoryType",bc.budget_model "budgetModel",bc.planned_amount::numeric "plannedAmount",bc.color,coalesce(ec.name,bc.expense_category,'Lain-Lain') "expenseCategory",coalesce(ec.id::text,'') "expenseCategoryId",coalesce(ec.active,false) "expenseCategoryActive",bc.details,coalesce((select jsonb_agg(item || jsonb_build_object('purchasedQuantity',coalesce(usage.quantity,0),'remainingQuantity',greatest(0,(item->>'quantity')::int-coalesce(usage.quantity,0))) order by ordinal) from jsonb_array_elements(bc.line_items) with ordinality source(item,ordinal) left join lateral(select sum(tbi.quantity)::int quantity from transaction_budget_items tbi join transactions tx on tx.id=tbi.transaction_id where tbi.budget_category_id=bc.id and tbi.budget_item_id=(item->>'id')::uuid and tx.status='posted' and tx.kind='expense' and not exists(select 1 from transactions r where r.reversal_of=tx.id and r.status='posted')) usage on true),'[]'::jsonb) "lineItems",
     coalesce((select sum(-te.amount) from transactions t join transaction_entries te on te.transaction_id=t.id join accounts a on a.id=te.account_id where t.organization_id=$1 and t.status='posted' and t.budget_category_id=bc.id and a.kind in('bank','cash','ewallet')),0)::numeric actual,
     coalesce((select sum(pr.estimated_total) from purchase_requests pr where pr.organization_id=$1 and pr.budget_category_id=bc.id and pr.status='submitted'),0)::numeric "pendingAmount",
-    coalesce((select sum(pr.estimated_total) from purchase_requests pr where pr.organization_id=$1 and pr.budget_category_id=bc.id and pr.status='approved'),0)::numeric "committedAmount"
+    coalesce((select sum(pr.estimated_total) from purchase_requests pr where pr.organization_id=$1 and pr.budget_category_id=bc.id and pr.status='approved'),0)::numeric "committedAmount",
+    (not exists(select 1 from transactions t where t.budget_category_id=bc.id) and not exists(select 1 from purchase_requests pr where pr.budget_category_id=bc.id)) "canDelete"
     from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id left join expense_categories ec on ec.id=bc.expense_category_id where bc.budget_period_id=$2 order by bc.created_at,bc.name`,
       [req.auth!.organizationId, period.rows[0].id],
     )
@@ -1905,6 +1906,43 @@ app.patch('/api/budget-categories/:id', requireAuth, requireFinance, async (req:
   } catch (e) {
     if ((e as { code?: string }).code === '23505') return res.status(409).json({ error: 'Nama pos anggaran sudah digunakan' })
     next(e)
+  }
+})
+
+app.delete('/api/budget-categories/:id', requireAuth, requireFinance, async (req: AuthedRequest, res, next) => {
+  const c = await pool.connect()
+  try {
+    await c.query('begin')
+    const category = await c.query(
+      `select bc.id,bc.name,bc.category_type "categoryType",bc.budget_model "budgetModel",bc.planned_amount::numeric "plannedAmount",bc.expense_category "expenseCategory",bc.details,bc.line_items "lineItems",bc.color
+       from budget_categories bc join budget_periods bp on bp.id=bc.budget_period_id
+       where bc.id=$1 and bp.organization_id=$2 and bp.status<>'closed'
+       for update of bc`,
+      [req.params.id, req.auth!.organizationId],
+    )
+    if (!category.rowCount) {
+      await c.query('rollback')
+      return res.status(404).json({ error: 'Pos anggaran tidak ditemukan atau RAB sudah ditutup' })
+    }
+    const usage = await c.query(
+      `select
+         (select count(*)::int from transactions where budget_category_id=$1) "transactionCount",
+         (select count(*)::int from purchase_requests where budget_category_id=$1) "requestCount"`,
+      [req.params.id],
+    )
+    if (usage.rows[0].transactionCount > 0 || usage.rows[0].requestCount > 0) {
+      await c.query('rollback')
+      return res.status(409).json({ error: 'Pos sudah digunakan oleh transaksi atau pengajuan dan tidak dapat dihapus. Ubah nama atau nominalnya jika perlu.' })
+    }
+    await c.query('delete from budget_categories where id=$1', [req.params.id])
+    await c.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'budget_category',$3,'delete',$4)`, [req.auth!.organizationId, req.auth!.userId, req.params.id, JSON.stringify(category.rows[0])])
+    await c.query('commit')
+    res.json({ ok: true })
+  } catch (e) {
+    await c.query('rollback')
+    next(e)
+  } finally {
+    c.release()
   }
 })
 
