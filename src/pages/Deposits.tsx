@@ -258,7 +258,6 @@ export function Deposits() {
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            sourceAccountId: importTopupTotal > 0 ? String(formData.get('sourceAccountId')) || undefined : undefined,
             statementBalance: Number(importStatementBalance),
             overrideReason: String(formData.get('overrideReason')).trim() || undefined,
             rows: importRows.map((row) => ({
@@ -566,15 +565,7 @@ export function Deposits() {
                     <input name="statementBalance" type="number" min="0" step="0.01" value={importStatementBalance} onChange={(event)=>setImportStatementBalance(event.target.value)} placeholder="Contoh: 1924741.02" required/>
                     <small>Sistem menghitung saldo pembuka periode secara otomatis agar saldo setelah impor sama dengan Selow.id.</small>
                   </label>
-                  {importTopupTotal > 0 && (sources.length ? (
-                    <label className="span-2">Rekening sumber untuk top-up
-                      <select name="sourceAccountId" defaultValue="" required>
-                        <option value="" disabled>Pilih rekening sumber</option>
-                        {sources.map((account) => <option value={account.id} key={account.id}>{account.name} — saldo {formatIDR(account.balance)}</option>)}
-                      </select>
-                      <small>Total top-up {formatIDR(importTopupTotal)} akan mengurangi rekening ini.</small>
-                    </label>
-                  ) : <div className="deposit-source-empty span-2"><AlertTriangle size={19}/><span><strong>Belum ada rekening sumber</strong><small>Tambahkan rekening sebelum mengimpor top-up Selow.id.</small></span><Button variant="secondary" onClick={()=>navigate('/rekening')}>Buka Rekening</Button></div>)}
+                  {importTopupTotal > 0 && <div className="vcc-security-note span-2"><ShieldCheck size={19}/><span><strong>Top-up pada file dianggap sebagai riwayat</strong><small>Total {formatIDR(importTopupTotal)} menambah riwayat VCC tanpa mengurangi rekening perusahaan. Untuk transfer baru, gunakan tombol Top-up sebelum mengimpor agar sistem mencocokkannya otomatis.</small></span></div>}
                   <fieldset className="selow-rab-map span-2">
                     <legend>Pemetaan debit ke RAB</legend>
                     <p>Satu merchant dapat diarahkan ke pos RAB berbeda. Sistem memastikan periodenya sama dengan tanggal transaksi.</p>
@@ -592,7 +583,7 @@ export function Deposits() {
                   <div className="vcc-security-note span-2"><ShieldCheck size={19}/><span><strong>Impor aman dan tidak menggandakan data</strong><small>File dibaca di perangkat Anda. Server hanya menerima tanggal, catatan, nominal, dan RAB. Catatan manual dengan tanggal dan nominal yang persis sama akan dicocokkan; catatan perkiraan yang berbeda perlu dibatalkan terlebih dahulu.</small></span></div>
                 </>
               )}
-              <div className="modal-actions span-2"><Button variant="secondary" onClick={closeSelowImport} disabled={saving}>Batal</Button><Button type="submit" disabled={saving||parsingImport||!importReady||(importTopupTotal>0&&!sources.length)}>{saving?'Mengimpor…':`Impor ${importRows.length||''} transaksi`}</Button></div>
+              <div className="modal-actions span-2"><Button variant="secondary" onClick={closeSelowImport} disabled={saving}>Batal</Button><Button type="submit" disabled={saving||parsingImport||!importReady}>{saving?'Mengimpor…':`Impor ${importRows.length||''} transaksi`}</Button></div>
             </form>
           )}
         </Modal>

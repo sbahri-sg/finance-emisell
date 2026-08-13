@@ -1235,7 +1235,6 @@ app.post('/api/deposits/:id/import-selow', importLimit, requireAuth, requireFina
   try {
     const input = z
         .object({
-          sourceAccountId: z.string().uuid().optional(),
           statementBalance: z.number().nonnegative().max(1e15),
           overrideReason: z.string().trim().max(500).optional(),
           rows: z.array(selowImportRow).min(1).max(2000),
@@ -1296,32 +1295,6 @@ app.post('/api/deposits/:id/import-selow', importLimit, requireAuth, requireFina
 
       const topupTotal = pending.filter((row) => row.amount > 0).reduce((sum, row) => sum + row.amount, 0),
         debitTotal = pending.filter((row) => row.amount < 0).reduce((sum, row) => sum + Math.abs(row.amount), 0)
-      let source: { id: string; name: string; opening_balance: string | number } | null = null
-      if (topupTotal > 0) {
-        if (!input.sourceAccountId) {
-          await c.query('rollback')
-          return res.status(400).json({ error: 'Pilih rekening sumber untuk top-up yang ditemukan pada file Selow.id' })
-        }
-        const sourceResult = await c.query(
-          `select id,name,currency,opening_balance from accounts where id=$1 and organization_id=$2 and kind in('bank','cash','ewallet') and active for update`,
-          [input.sourceAccountId, org],
-        )
-        if (!sourceResult.rowCount || sourceResult.rows[0].currency !== deposit.rows[0].currency) {
-          await c.query('rollback')
-          return res.status(409).json({ error: 'Rekening sumber top-up tidak valid atau mata uangnya berbeda' })
-        }
-        const currentSource = sourceResult.rows[0] as { id: string; name: string; opening_balance: string | number }
-        source = currentSource
-        const sourceEntries = await c.query(
-            `select coalesce(sum(case when t.status='posted' then e.amount else 0 end),0)::numeric amount from transaction_entries e join transactions t on t.id=e.transaction_id where e.account_id=$1`,
-            [currentSource.id],
-          ),
-          sourceBalance = Number(currentSource.opening_balance) + Number(sourceEntries.rows[0].amount)
-        if (sourceBalance < topupTotal) {
-          await c.query('rollback')
-          return res.status(409).json({ error: `Saldo ${currentSource.name} tidak cukup untuk total top-up ${topupTotal.toLocaleString('id-ID')}` })
-        }
-      }
 
       const depositEntries = await c.query(
           `select coalesce(sum(case when t.status='posted' then e.amount else 0 end),0)::numeric amount from transaction_entries e join transactions t on t.id=e.transaction_id where e.account_id=$1`,
@@ -1337,6 +1310,19 @@ app.post('/api/deposits/:id/import-selow', importLimit, requireAuth, requireFina
         `select id from accounts where organization_id=$1 and name='Pengeluaran' and kind='clearing' and active`,
         [org],
       )
+      let historyFundingAccount: { id: string } | null = null
+      if (topupTotal > 0) {
+        const historyFundingName = `Riwayat Deposit ${deposit.rows[0].currency}`
+        await c.query(
+          `insert into accounts(organization_id,name,kind,currency,color) values($1,$2,'clearing',$3,'#607d73') on conflict(organization_id,name) do nothing`,
+          [org, historyFundingName, deposit.rows[0].currency],
+        )
+        const historyFunding = await c.query(
+          `select id from accounts where organization_id=$1 and name=$2 and kind='clearing' and active`,
+          [org, historyFundingName],
+        )
+        historyFundingAccount = historyFunding.rows[0] as { id: string }
+      }
 
       for (const row of pending) {
         let transactionId: string
@@ -1349,7 +1335,7 @@ app.post('/api/deposits/:id/import-selow', importLimit, requireAuth, requireFina
           transactionId = transaction.rows[0].id
           await c.query(
             `insert into transaction_entries(transaction_id,account_id,amount) values($1,$2,$3),($1,$4,$5)`,
-            [transactionId, source!.id, -row.amount, deposit.rows[0].id, row.amount],
+            [transactionId, historyFundingAccount!.id, -row.amount, deposit.rows[0].id, row.amount],
           )
           counts.topups += 1
         } else {
@@ -1424,7 +1410,7 @@ app.post('/api/deposits/:id/import-selow', importLimit, requireAuth, requireFina
       )
       await c.query(
         `insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'account',$3,'import_selow',$4)`,
-        [org, req.auth!.userId, deposit.rows[0].id, JSON.stringify({ ...counts, rows: input.rows.length, statementBalance: input.statementBalance, projectedBalance, balanceAdjustment })],
+        [org, req.auth!.userId, deposit.rows[0].id, JSON.stringify({ ...counts, rows: input.rows.length, statementBalance: input.statementBalance, projectedBalance, balanceAdjustment, topupFundingMode: 'history' })],
       )
       await c.query('commit')
       res.status(201).json({ ...counts, statementBalance: input.statementBalance, balanceAdjustment })
