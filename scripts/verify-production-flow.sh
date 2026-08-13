@@ -74,6 +74,13 @@ curl -fsS -b "$cookie_file" "$base/api/budgets?month=2026-08" | jq -e --arg cate
 used_expense_category_id=$(curl -fsS -b "$cookie_file" "$base/api/settings" | jq -er '.expenseCategories[]|select(.name=="Kebersihan & Perlengkapan")|.id')
 [ "$(curl -sS -o /dev/null -w '%{http_code}' -b "$cookie_file" -X DELETE "$base/api/expense-categories/$used_expense_category_id")" = 409 ]
 [ "$(curl -sS -o /dev/null -w '%{http_code}' -b "$cookie_file" -X PATCH -H 'Content-Type: application/json' -d '{"name":"Kebersihan & Perlengkapan","color":"#6f9f72","active":false}' "$base/api/expense-categories/$used_expense_category_id")" = 409 ]
+history_only_category_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"name":"Histori Saja","color":"#7a8682"}' "$base/api/expense-categories" | jq -er '.id')
+history_only_payload=$(jq -nc --arg account "$account_id" '{transactionDate:"2026-08-11",accountId:$account,amount:25000,description:"Uji kategori histori saja",category:"Histori Saja",paymentMethod:"transfer"}')
+history_only_transaction_id=$(curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d "$history_only_payload" "$base/api/expenses" | jq -er '.id')
+curl -fsS -b "$cookie_file" -H 'Content-Type: application/json' -d '{"transactionDate":"2026-08-11","reason":"Jadikan histori untuk uji hapus kategori"}' "$base/api/transactions/$history_only_transaction_id/reverse" | jq -er '.id' >/dev/null
+curl -fsS -b "$cookie_file" "$base/api/settings" | jq -e --arg category "$history_only_category_id" '(.expenseCategories[]|select(.id==$category)|.transactionCount)==0 and (.expenseCategories[]|select(.id==$category)|.historyCount)>0' >/dev/null
+curl -fsS -b "$cookie_file" -X DELETE "$base/api/expense-categories/$history_only_category_id" | jq -e '.ok==true and .merged==false and .detachedHistory>0' >/dev/null
+curl -fsS -b "$cookie_file" "$base/api/settings" | jq -e --arg category "$history_only_category_id" '([.expenseCategories[]|select(.id==$category)]|length)==0' >/dev/null
 fractional_quantity_status=$(curl -sS -o /dev/null -w '%{http_code}' -b "$cookie_file" -X PATCH -H 'Content-Type: application/json' -d '{"name":"Kebutuhan kantor","expenseCategory":"Kebersihan & Perlengkapan","details":["Galon"],"budgetModel":"multi_item","lineItems":[{"name":"Galon","quantity":1.07,"unitPrice":50000}],"categoryType":"variable","plannedAmount":53500,"color":"#d89b50"}' "$base/api/budget-categories/$category_id")
 [ "$fractional_quantity_status" = 400 ]
 

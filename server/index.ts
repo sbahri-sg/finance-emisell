@@ -424,9 +424,9 @@ app.delete('/api/expense-categories/:id', settingsLimit, requireAuth, requireUse
       (select count(*)::int from transactions t where t.expense_category_id=$1 and t.status<>'reversed' and t.kind<>'reversal' and not exists(select 1 from transactions r where r.reversal_of=t.id and r.status='posted')) "transactionCount",
       (select count(*)::int from transactions t where t.expense_category_id=$1 and (t.status='reversed' or t.kind='reversal' or exists(select 1 from transactions r where r.reversal_of=t.id and r.status='posted'))) "historyCount",
       (select count(*)::int from budget_categories where expense_category_id=$1) "budgetCount"`, [req.params.id])
-    const isUsed = Boolean(usage.rows[0].transactionCount || usage.rows[0].historyCount || usage.rows[0].budgetCount)
+    const requiresReplacement = Boolean(usage.rows[0].transactionCount || usage.rows[0].budgetCount)
     let replacement: { id: string; name: string } | null = null
-    if (isUsed) {
+    if (requiresReplacement) {
       if (!input.replacementCategoryId || input.replacementCategoryId === req.params.id) {
         await c.query('rollback')
         return res.status(409).json({ error: 'Pilih kategori pengganti sebelum menghapus kategori yang sudah digunakan.' })
@@ -441,6 +441,8 @@ app.delete('/api/expense-categories/:id', settingsLimit, requireAuth, requireUse
       await c.query('update transactions set expense_category_id=$1 where expense_category_id=$2 and organization_id=$3', [targetCategory.id, req.params.id, org])
       await c.query(`update budget_categories bc set expense_category_id=$1,updated_at=now()
         from budget_periods bp where bc.budget_period_id=bp.id and bc.expense_category_id=$2 and bp.organization_id=$3`, [targetCategory.id, req.params.id, org])
+    } else if (usage.rows[0].historyCount) {
+      await c.query('update transactions set expense_category_id=null where expense_category_id=$1 and organization_id=$2', [req.params.id, org])
     }
     if (category.rows[0].active) {
       const remaining = await c.query('select count(*)::int count from expense_categories where organization_id=$1 and active and id<>$2', [org, req.params.id])
@@ -452,7 +454,7 @@ app.delete('/api/expense-categories/:id', settingsLimit, requireAuth, requireUse
     await c.query(`insert into audit_logs(organization_id,actor_id,entity,entity_id,action,data) values($1,$2,'expense_category',$3,$4,$5)`, [org, req.auth!.userId, category.rows[0].id, replacement ? 'merge_delete' : 'delete', JSON.stringify({ name: category.rows[0].name, usage: usage.rows[0], replacement })])
     await c.query('delete from expense_categories where id=$1 and organization_id=$2', [req.params.id, org])
     await c.query('commit')
-    res.json({ ok: true, merged: Boolean(replacement), replacement })
+    res.json({ ok: true, merged: Boolean(replacement), detachedHistory: Number(usage.rows[0].historyCount || 0), replacement })
   } catch (e) {
     await c.query('rollback')
     if ((e as { code?: string }).code === '23503') return res.status(409).json({ error: 'Kategori masih memiliki referensi lain dan belum dapat dihapus.' })
