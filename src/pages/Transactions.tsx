@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ArrowDownLeft, ArrowUpRight, BanknoteArrowDown, Check, Download, Filter, Pencil, Plus, Search, Trash2 } from 'lucide-react'
 import { Badge, Button, Card, Modal, PageHeader } from '../components/ui'
 import { useFinance } from '../lib/FinanceContext'
 import { formatDate, formatIDR } from '../lib/format'
 import type { BudgetCategory, ExpenseCategoryLabel, Transaction } from '../types'
+
+type ExpenseCartRow = { budgetItemId: string; quantity: number; unitPrice: number }
 
 const currentMonth = new Date().toISOString().slice(0, 7)
 const today = new Date().toISOString().slice(0, 10)
@@ -23,7 +25,7 @@ export function Transactions() {
   const [expenseDescription, setExpenseDescription] = useState('')
   const [expenseCategory, setExpenseCategory] = useState('Utilities & Langganan')
   const [expenseBudgetCategoryId, setExpenseBudgetCategoryId] = useState('')
-  const [expenseBudgetItemName, setExpenseBudgetItemName] = useState('')
+  const [expenseBudgetItems, setExpenseBudgetItems] = useState<ExpenseCartRow[]>([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const cashAccounts = accounts.filter((account) => ['bank', 'cash', 'ewallet'].includes(account.kind))
@@ -43,7 +45,7 @@ export function Transactions() {
       setExpenseAmount(0)
       setExpenseDescription('')
       setExpenseBudgetCategoryId('')
-      setExpenseBudgetItemName('')
+      setExpenseBudgetItems([])
       setExpenseModal(true)
     }
     if (action) {
@@ -52,8 +54,8 @@ export function Transactions() {
       setSearchParams(next, { replace: true })
     }
   }, [canPost, searchParams, setSearchParams])
-  useEffect(() => {
-    void fetch(`/api/budgets?month=${currentMonth}`, { credentials: 'include' })
+  const loadBudgetCategories = useCallback(async () => {
+    await fetch(`/api/budgets?month=${currentMonth}`, { credentials: 'include' })
       .then((response) => (response.ok ? response.json() : null))
       .then((raw) =>
         setBudgetCategories(
@@ -64,11 +66,14 @@ export function Transactions() {
             pendingAmount: Number(category.pendingAmount),
             committedAmount: Number(category.committedAmount),
             budgetModel: category.budgetModel || 'fixed',
-            lineItems: (category.lineItems || []).map((item) => ({ name: item.name, quantity: Number(item.quantity), unitPrice: Number(item.unitPrice) })),
+            lineItems: (category.lineItems || []).map((item) => ({ id: item.id, name: item.name, quantity: Number(item.quantity), unitPrice: Number(item.unitPrice), purchasedQuantity: Number(item.purchasedQuantity || 0), remainingQuantity: Number(item.remainingQuantity ?? item.quantity) })),
           })),
         ),
       )
   }, [])
+  useEffect(() => {
+    void loadBudgetCategories()
+  }, [loadBudgetCategories])
   useEffect(() => {
     void fetch('/api/expense-categories', { credentials: 'include' })
       .then((response) => (response.ok ? response.json() : { categories: [] }))
@@ -79,16 +84,14 @@ export function Transactions() {
       })
   }, [])
   const filtered = useMemo(() => items.filter((item) => `${item.description} ${item.reference} ${item.category} ${item.counterparty || ''}`.toLowerCase().includes(query.toLowerCase()) && (kind === 'all' || item.kind === kind)), [items, kind, query])
-  const expenseBudgetItemValue = useMemo(() => {
-    if (!expenseBudgetCategoryId || !expenseBudgetItemName) return ''
-    const category = budgetCategories.find((item) => item.id === expenseBudgetCategoryId)
-    const itemIndex = category?.lineItems.findIndex((item) => item.name === expenseBudgetItemName) ?? -1
-    return itemIndex >= 0 ? `${expenseBudgetCategoryId}:${itemIndex}` : ''
-  }, [budgetCategories, expenseBudgetCategoryId, expenseBudgetItemName])
   const selectedExpenseBudget = useMemo(
     () => budgetCategories.find((category) => category.id === expenseBudgetCategoryId),
     [budgetCategories, expenseBudgetCategoryId],
   )
+  const expenseCartTotal = useMemo(() => expenseBudgetItems.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0), [expenseBudgetItems])
+  useEffect(() => {
+    if (selectedExpenseBudget?.budgetModel === 'multi_item') setExpenseAmount(expenseCartTotal)
+  }, [expenseCartTotal, selectedExpenseBudget?.budgetModel])
   const monthItems = items.filter((item) => item.date.startsWith(currentMonth))
   const incomeTotal = monthItems.filter((item) => item.kind === 'income' && item.status === 'posted').reduce((sum, item) => sum + Math.max(0, item.amount), 0)
   const expenseTotal = Math.abs(monthItems.filter((item) => item.amount < 0 && item.status === 'posted').reduce((sum, item) => sum + item.amount, 0))
@@ -138,7 +141,7 @@ export function Transactions() {
         description: expenseDescription.trim(),
         category: expenseCategory,
         budgetCategoryId: expenseBudgetCategoryId || undefined,
-        budgetItemName: expenseBudgetItemValue ? expenseBudgetItemName : undefined,
+        budgetItems: selectedExpenseBudget?.budgetModel === 'multi_item' ? expenseBudgetItems : undefined,
         counterparty: String(formData.get('counterparty')).trim() || undefined,
         paymentMethod: String(formData.get('paymentMethod')),
         proofUrl: String(formData.get('proofUrl')).trim() || undefined,
@@ -155,6 +158,7 @@ export function Transactions() {
       }
       if (!response.ok) throw new Error(body.error || 'Pengeluaran belum dapat disimpan')
       await refresh()
+      await loadBudgetCategories()
       setExpenseModal(false)
       setEditing(null)
     } catch (e) {
@@ -189,31 +193,28 @@ export function Transactions() {
     setExpenseDescription(transaction?.description || '')
     setExpenseCategory(transaction?.category || expenseCategories[0]?.name || 'Lain-Lain')
     setExpenseBudgetCategoryId(transaction?.budgetCategoryId || '')
-    setExpenseBudgetItemName(transaction?.budgetItemName || '')
+    setExpenseBudgetItems((transaction?.budgetItems || []).map((item) => ({ budgetItemId: item.budgetItemId, quantity: Number(item.quantity), unitPrice: Number(item.actualUnitPrice) })))
     setExpenseModal(true)
-  }
-  function selectBudgetItem(value: string) {
-    if (!value) {
-      setExpenseBudgetItemName('')
-      return
-    }
-    const [categoryId, itemIndexText] = value.split(':')
-    const category = budgetCategories.find((item) => item.id === categoryId)
-    const item = category?.lineItems[Number(itemIndexText)]
-    if (!category || !item) return
-    setExpenseBudgetCategoryId(category.id)
-    setExpenseBudgetItemName(item.name)
-    setExpenseDescription(item.name)
-    setExpenseAmount(item.quantity * item.unitPrice)
-    setExpenseCategory(category.expenseCategory || 'Lain-Lain')
   }
   function selectBudgetCategory(categoryId: string) {
     setExpenseBudgetCategoryId(categoryId)
-    setExpenseBudgetItemName('')
+    setExpenseBudgetItems([])
     if (!categoryId) return
     const category = budgetCategories.find((item) => item.id === categoryId)
     if (!category) return
     setExpenseCategory(category.expenseCategory || 'Lain-Lain')
+  }
+  function toggleBudgetItem(itemId: string, checked: boolean) {
+    if (!selectedExpenseBudget) return
+    const definition = selectedExpenseBudget.lineItems.find((item) => item.id === itemId)
+    if (!definition) return
+    const currentNames = expenseBudgetItems.map((row) => selectedExpenseBudget.lineItems.find((item) => item.id === row.budgetItemId)?.name).filter(Boolean).join(', ')
+    const nextRows = checked ? [...expenseBudgetItems, { budgetItemId: itemId, quantity: 1, unitPrice: definition.unitPrice }] : expenseBudgetItems.filter((item) => item.budgetItemId !== itemId)
+    setExpenseBudgetItems(nextRows)
+    if (!expenseDescription.trim() || expenseDescription === currentNames) setExpenseDescription(nextRows.map((row) => selectedExpenseBudget.lineItems.find((item) => item.id === row.budgetItemId)?.name).filter(Boolean).join(', '))
+  }
+  function updateBudgetCartItem(itemId: string, field: 'quantity' | 'unitPrice', value: number) {
+    setExpenseBudgetItems((current) => current.map((item) => item.budgetItemId === itemId ? { ...item, [field]: Math.max(field === 'quantity' ? 1 : 0, field === 'quantity' ? Math.trunc(value || 1) : value || 0) } : item))
   }
   async function postTransaction(id: string) {
     setSaving(true)
@@ -332,8 +333,7 @@ export function Transactions() {
                     <span>
                       <strong>{trx.description}</strong>
                       <small>
-                        {trx.counterparty ? `${trx.counterparty} · ` : ''}
-                        {trx.reference || 'Tanpa referensi'}
+                        {trx.budgetItems?.length ? `${trx.budgetItems.length} item RAB · ${trx.budgetItems.map((item) => `${item.itemName} ${item.quantity}x`).join(', ')}` : <>{trx.counterparty ? `${trx.counterparty} · ` : ''}{trx.reference || 'Tanpa referensi'}</>}
                       </small>
                     </span>
                   </td>
@@ -503,7 +503,7 @@ export function Transactions() {
             </label>
             <label>
               Nominal
-              <input name="amount" type="number" min="1" step="1" required value={expenseAmount || ''} onChange={(event) => setExpenseAmount(Number(event.target.value))} />
+              <input name="amount" type="number" min="1" step="1" required readOnly={selectedExpenseBudget?.budgetModel === 'multi_item'} value={expenseAmount || ''} onChange={(event) => setExpenseAmount(Number(event.target.value))} />
             </label>
             <label className="span-2">
               Rekening
@@ -530,17 +530,26 @@ export function Transactions() {
               </select>
               <span className="field-help">Pilih pos RAB terlebih dahulu agar kategori dan rincian tetap konsisten.</span>
             </label>
-            {selectedExpenseBudget && selectedExpenseBudget.lineItems.length > 0 && (
-              <label className="span-2">
-                Rincian item RAB <span className="optional-label">Opsional</span>
-                <select value={expenseBudgetItemValue} onChange={(event) => selectBudgetItem(event.target.value)}>
-                  <option value="">Tanpa item tertentu</option>
-                  {selectedExpenseBudget.lineItems.map((item, index) => (
-                    <option value={`${selectedExpenseBudget.id}:${index}`} key={`${selectedExpenseBudget.id}-${index}`}>{item.name} — {item.quantity.toLocaleString('id-ID')} × {formatIDR(item.unitPrice)} = {formatIDR(item.quantity * item.unitPrice)}</option>
-                  ))}
-                </select>
-                <span className="field-help">Memilih item akan mengisi deskripsi dan nominal secara otomatis.</span>
-              </label>
+            {selectedExpenseBudget?.budgetModel === 'multi_item' && (
+              <fieldset className="budget-cart span-2">
+                <legend>Keranjang item RAB</legend>
+                <p>Centang barang yang dibeli, lalu isi qty dan harga aktual.</p>
+                <div className="budget-cart-head"><span>Item dan sisa</span><span>Qty beli</span><span>Harga aktual</span><span>Subtotal</span></div>
+                {selectedExpenseBudget.lineItems.map((item) => {
+                  const itemId = item.id || ''
+                  const cartItem = expenseBudgetItems.find((row) => row.budgetItemId === itemId)
+                  const oldQuantity = editing?.budgetItems?.find((row) => row.budgetItemId === itemId)?.quantity || 0
+                  const available = (item.remainingQuantity ?? item.quantity) + oldQuantity
+                  return <div className={`budget-cart-row ${cartItem ? 'selected' : ''} ${available <= 0 ? 'fulfilled' : ''}`} key={itemId || item.name}>
+                    <label className="budget-cart-check"><input type="checkbox" checked={Boolean(cartItem)} disabled={!itemId || available <= 0} onChange={(event) => toggleBudgetItem(itemId, event.target.checked)}/><span><strong>{item.name}</strong><small>{editing ? `${Math.max(0,(item.purchasedQuantity || 0)-oldQuantity)} dibeli di transaksi lain · maks ${Math.max(0,available)}` : `${item.purchasedQuantity || 0} dibeli · sisa ${Math.max(0,available)}`}</small></span></label>
+                    <input aria-label={`Qty ${item.name}`} type="number" min="1" max={available} step="1" disabled={!cartItem} value={cartItem?.quantity || ''} onChange={(event) => updateBudgetCartItem(itemId, 'quantity', Number(event.target.value))}/>
+                    <input aria-label={`Harga ${item.name}`} type="number" min="0" step="1" disabled={!cartItem} value={cartItem?.unitPrice ?? ''} onChange={(event) => updateBudgetCartItem(itemId, 'unitPrice', Number(event.target.value))}/>
+                    <strong>{formatIDR(cartItem ? cartItem.quantity * cartItem.unitPrice : 0)}</strong>
+                  </div>
+                })}
+                <div className="budget-cart-total"><span>{expenseBudgetItems.length} item dipilih</span><strong>Total {formatIDR(expenseCartTotal)}</strong></div>
+                {!selectedExpenseBudget.lineItems.length && <div className="budget-cart-empty">Pos RAB ini belum memiliki rincian item.</div>}
+              </fieldset>
             )}
             <label className="span-2">
               Kategori pencatatan

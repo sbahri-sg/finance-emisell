@@ -31,6 +31,7 @@ export interface Transaction {
   accountId?: string
   budgetCategoryId?: string
   budgetItemName?: string
+  budgetItems?: TransactionBudgetItem[]
   kind: TransactionKind
   amount: number
   status: TransactionStatus
@@ -108,9 +109,21 @@ export type BudgetCategoryType = 'fixed' | 'variable' | 'emergency' | 'investmen
 export type BudgetModel = 'fixed' | 'multi_item'
 
 export interface BudgetLineItem {
+  id?: string
   name: string
   quantity: number
   unitPrice: number
+  purchasedQuantity?: number
+  remainingQuantity?: number
+}
+
+export interface TransactionBudgetItem {
+  budgetItemId: string
+  itemName: string
+  quantity: number
+  plannedUnitPrice: number
+  actualUnitPrice: number
+  subtotal: number
 }
 
 export interface BudgetPeriod {

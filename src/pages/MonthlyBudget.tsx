@@ -63,7 +63,7 @@ export function MonthlyBudget() {
           pendingAmount: numberValue(category.pendingAmount),
           committedAmount: numberValue(category.committedAmount),
           budgetModel: category.budgetModel || (category.details?.length ? 'multi_item' : 'fixed'),
-          lineItems: (category.lineItems || []).map((item) => ({ name: item.name, quantity: numberValue(item.quantity), unitPrice: numberValue(item.unitPrice) })),
+          lineItems: (category.lineItems || []).map((item) => ({ id: item.id, name: item.name, quantity: numberValue(item.quantity), unitPrice: numberValue(item.unitPrice), purchasedQuantity: numberValue(item.purchasedQuantity), remainingQuantity: numberValue(item.remainingQuantity) })),
         })),
       })
     } catch (e) {
@@ -168,7 +168,7 @@ export function MonthlyBudget() {
       expenseCategory: String(formData.get('expenseCategory')),
       details: budgetModel === 'multi_item' ? lineItems.map((item) => item.name.trim()).filter(Boolean) : [],
       budgetModel,
-      lineItems: budgetModel === 'multi_item' ? lineItems.map((item) => ({ name: item.name.trim(), quantity: numberValue(item.quantity), unitPrice: numberValue(item.unitPrice) })) : [],
+      lineItems: budgetModel === 'multi_item' ? lineItems.map((item) => ({ id: item.id, name: item.name.trim(), quantity: numberValue(item.quantity), unitPrice: numberValue(item.unitPrice) })) : [],
       categoryType: String(formData.get('categoryType')),
       plannedAmount: budgetModel === 'multi_item' ? lineItemsTotal : fixedAmount,
       color: String(formData.get('color')),
@@ -367,10 +367,10 @@ export function MonthlyBudget() {
                         <strong>Rincian {category.name}</strong>
                         <div className="budget-detail-table">
                           {category.lineItems.map((item, index) => (
-                            <div key={`${item.name}-${index}`}>
+                            <div key={item.id || `${item.name}-${index}`}>
                               <span>{item.name}</span>
-                              <span>{item.quantity.toLocaleString('id-ID')} × {formatIDR(item.unitPrice)}</span>
-                              <strong>{formatIDR(item.quantity * item.unitPrice)}</strong>
+                              <span>{(item.purchasedQuantity || 0).toLocaleString('id-ID')} dibeli · sisa {(item.remainingQuantity ?? item.quantity).toLocaleString('id-ID')}</span>
+                              <strong>{item.quantity.toLocaleString('id-ID')} × {formatIDR(item.unitPrice)}</strong>
                             </div>
                           ))}
                         </div>
