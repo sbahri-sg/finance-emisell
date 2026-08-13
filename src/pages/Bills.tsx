@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { BellRing, CalendarDays, Check, Clock3, CreditCard, Plus, RefreshCw } from 'lucide-react'
+import { AlertTriangle, BellRing, CalendarDays, Check, Clock3, CreditCard, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { useFinance } from '../lib/FinanceContext'
 import { formatCurrency, formatDate, formatIDR, initials } from '../lib/format'
 import { Badge, Button, Card, Modal, PageHeader } from '../components/ui'
@@ -15,6 +15,7 @@ export function Bills() {
     [billQuantity, setBillQuantity] = useState(1),
     [billCurrency, setBillCurrency] = useState<'IDR' | 'USD'>('IDR'),
     [payment, setPayment] = useState<Bill | null>(null),
+    [deleteTarget, setDeleteTarget] = useState<Bill | null>(null),
     [saving, setSaving] = useState(false),
     [error, setError] = useState(''),
     [budgetCategories, setBudgetCategories] = useState<BudgetCategory[]>([])
@@ -89,8 +90,8 @@ export function Bills() {
     }
   }
   async function removeBill(bill: Bill) {
-    if (!window.confirm(`Hapus tagihan ${bill.vendor}?`)) return
-    await api(`/api/bills/${bill.id}`, {}, 'DELETE')
+    const ok = await api(`/api/bills/${bill.id}`, {}, 'DELETE')
+    if (ok) setDeleteTarget(null)
   }
   async function payBill(formData: FormData) {
     if (!payment) return
@@ -275,7 +276,7 @@ export function Bills() {
                           >
                             Edit
                           </button>
-                          <button className="reject" onClick={() => void removeBill(bill)}>
+                          <button className="reject" onClick={() => setDeleteTarget(bill)}>
                             Hapus
                           </button>
                           <button
@@ -288,6 +289,8 @@ export function Bills() {
                             <CreditCard size={13} /> Bayar
                           </button>
                         </>
+                      ) : canManage ? (
+                        <button className="reject" onClick={() => setDeleteTarget(bill)}>Hapus</button>
                       ) : (
                         <span>—</span>
                       )}
@@ -455,6 +458,36 @@ export function Bills() {
               </Button>
             </div>
           </form>
+        </Modal>
+      )}
+      {deleteTarget && (
+        <Modal
+          title={deleteTarget.status === 'paid' ? 'Hapus dari daftar renewal?' : 'Hapus jadwal renewal?'}
+          description="Konfirmasi diperlukan sebelum data diremove"
+          onClose={() => !saving && setDeleteTarget(null)}
+        >
+          {error && <div className="auth-error delete-confirmation-error">{error}</div>}
+          <div className="delete-confirmation">
+            <span className="delete-confirmation-icon"><Trash2 size={25} /></span>
+            <div>
+              <strong>{deleteTarget.vendor}</strong>
+              <p>{deleteTarget.description} · jatuh tempo {formatDate(deleteTarget.dueDate)}</p>
+            </div>
+          </div>
+          <div className="delete-confirmation-note">
+            <AlertTriangle size={17} />
+            <span>
+              {deleteTarget.status === 'paid'
+                ? 'Data akan disembunyikan dari daftar renewal. Transaksi pembayaran tetap tersimpan dan saldo tidak berubah.'
+                : 'Jadwal renewal ini akan dibatalkan dan tidak lagi muncul pada pengingat jatuh tempo.'}
+            </span>
+          </div>
+          <div className="modal-actions delete-confirmation-actions">
+            <Button variant="secondary" onClick={() => setDeleteTarget(null)} disabled={saving}>Batal</Button>
+            <Button variant="danger" onClick={() => void removeBill(deleteTarget)} disabled={saving}>
+              <Trash2 size={15} /> {saving ? 'Menghapus…' : 'Hapus renewal'}
+            </Button>
+          </div>
         </Modal>
       )}
     </>
